@@ -1,0 +1,280 @@
+name: Build Morphe‑patched apps
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 5 * * *" # daily at 05:15 UTC
+
+permissions:
+  contents: write   # needed for gh release download (read) and state.json writes
+  actions: read
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      should-build: ${{ steps.version-check.outputs.should-build }}
+      patches-version: ${{ steps.version-check.outputs.patches-version }}
+      cli-version: ${{ steps.version-check.outputs.cli-version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install GitHub CLI
+        uses: cli/cli-action@v2
+
+      - name: Check latest versions
+        id: version-check
+        run: |
+          set -euo pipefail
+          
+          # Get latest versions
+          PATCHES_TAG="$(gh release view --repo MorpheApp/morphe-patches --json tagName -q .tagName)"
+          CLI_TAG="$(gh release view --repo MorpheApp/morphe-cli --json tagName -q .tagName)"
+          
+          echo "patches-version=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
+          echo "cli-version=$CLI_TAG" >> "$GITHUB_OUTPUT"
+          
+          # Load previous state
+          if [ -f state.json ]; then
+            PREV_PATCHES=$(jq -r '.patches_version // "none"' state.json)
+            PREV_CLI=$(jq -r '.cli_version // "none"' state.json)
+          else
+            PREV_PATCHES="none"
+            PREV_CLI="none"
+          fi
+          
+          # Check if versions changed
+          if [ "$PATCHES_TAG" != "$PREV_PATCHES" ] || [ "$CLI_TAG" != "$PREV_CLI" ]; then
+            echo "should-build=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Version changes detected. Patches: $PREV_PATCHES → $PATCHES_TAG, CLI: $PREV_CLI → $CLI_TAG"
+          else
+            echo "should-build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No version changes detected. Skipping build."
+          fi
+
+  build:
+    needs: check-versions
+    if: needs.check-versions.outputs.should-build == 'true'
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: youtube
+            appId: com.google.android.youtube
+          - name: ytmusic
+            appId: com.google.android.apps.youtube.music
+          - name: reddit
+            appId: com.reddit.frontpage
+
+    env:
+      # Where we'll put tools/artifacts
+      TOOLS_DIR: tools
+      APKS_DIR: apps
+      OUT_DIR: out
+      PATCHES_VERSION: ${{ needs.check-versions.outputs.patches-version }}
+      CLI_VERSION: ${{ needs.check-versions.outputs.cli-version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java (for morphe-cli)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17" # any current LTS JRE is fine to run the CLI [9](https://aur.archlinux.org/packages/morphe-cli)
+
+      - name: Install jq & apkeep
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          # apkeep: CLI APK downloader (defaults to APKPure mirror; supports Google Play with token) [4](https://github.com/EFForg/apkeep)[5](https://github.com/EFForg/apkeep/blob/master/USAGE-google-play.md)
+          sudo curl -fsSL -o /usr/local/bin/apkeep \
+            https://github.com/EFForg/apkeep/releases/latest/download/apkeep-linux-x86_64
+          sudo chmod +x /usr/local/bin/apkeep
+
+      - name: Prepare dirs
+        run: |
+          mkdir -p "$TOOLS_DIR" "$APKS_DIR" "$OUT_DIR"
+
+      - name: Install GitHub CLI
+        uses: cli/cli-action@v2
+
+      - name: Get latest Morphe patches + CLI
+        id: morphe
+        run: |
+          set -euo pipefail
+
+          # latest patches (morphe-patches) and metadata
+          PATCHES_TAG="$(gh release view --repo MorpheApp/morphe-patches --json tagName -q .tagName)"
+          echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
+          gh release download "$PATCHES_TAG" \
+            --repo MorpheApp/morphe-patches \
+            --pattern 'patches-*.mpp' \
+            --dir "$TOOLS_DIR" >/dev/null
+          # also fetch patches-list.json to know available patches by app [3](https://github.com/MorpheApp/morphe-patches)
+          curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
+            -o "$TOOLS_DIR/patches-list.json"
+
+          # latest CLI (morphe-cli) fat jar
+          CLI_TAG="$(gh release view --repo MorpheApp/morphe-cli --json tagName -q .tagName)"  # releases exist on the repo [1](https://github.com/MorpheApp/morphe-cli)
+          echo "cli_tag=$CLI_TAG" >> "$GITHUB_OUTPUT"
+          gh release download "$CLI_TAG" \
+            --repo MorpheApp/morphe-cli \
+            --pattern 'morphe-cli-*-all.jar' \
+            --dir "$TOOLS_DIR" >/dev/null
+
+      - name: Ensure patches.json exists (generate defaults if missing)
+        run: |
+          set -euo pipefail
+          if [ ! -f patches.json ]; then
+            echo "::notice::No patches.json found; generating with all patches enabled by default."
+
+            # Some releases expose an array "patches", some a flat list; handle both.
+            jq -n --slurpfile plist "$TOOLS_DIR/patches-list.json" '
+              def base($pkg):
+                ($plist[0].patches // $plist[0]) # handle { "patches": [...] } or just [...]
+                | map(select( (.compatiblePackages // .compatible_packages)
+                               | any(.name == $pkg or .packageName == $pkg) ))
+                | map({ (.name): true }) | add;
+
+              {
+                "com.google.android.youtube": base("com.google.android.youtube"),
+                "com.google.android.apps.youtube.music": base("com.google.android.apps.youtube.music"),
+                "com.reddit.frontpage": base("com.reddit.frontpage")
+              }' > patches.json
+          fi
+          echo "Generated/using patches.json:"
+          jq 'keys' patches.json
+
+      - name: Download latest APK for ${{ matrix.appId }}
+        id: getapk
+        run: |
+          set -euo pipefail
+          # By default use APKPure via apkeep (no credentials). You can switch to Google Play:
+          #   apkeep -a ${{ matrix.appId }} -d google-play -e "$GOOGLE_EMAIL" -t "$GOOGLE_AAS_TOKEN" "$APKS_DIR"
+          # (see apkeep Google Play usage for AAS token instructions) [5](https://github.com/EFForg/apkeep/blob/master/USAGE-google-play.md)
+          apkeep -a "${{ matrix.appId }}" -d apk-pure "$APKS_DIR"   # APKPure default works well in CI [4](https://github.com/EFForg/apkeep)
+          APK_PATH="$(ls -1 $APKS_DIR/${{ matrix.appId }}*.apk | head -n1)"
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK downloaded for ${{ matrix.appId }}"; exit 1
+          fi
+          echo "apk=$APK_PATH" >> "$GITHUB_OUTPUT"
+          
+          # Extract version from APK filename
+          APK_FILENAME=$(basename "$APK_PATH")
+          APK_VERSION=$(echo "$APK_FILENAME" | grep -oP '\d+\.\d+\.\d+' | head -1)
+          if [ -z "$APK_VERSION" ]; then
+            APK_VERSION="unknown"
+          fi
+          echo "version=$APK_VERSION" >> "$GITHUB_OUTPUT"
+          echo "::notice::Downloaded ${{ matrix.name }} v$APK_VERSION"
+
+      - name: Build disable flags from patches.json
+        id: disables
+        run: |
+          set -euo pipefail
+          DISABLES="$(jq -r --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries | map(select(.value==false)) | .[].key' patches.json || true)"
+          # morphe-cli lets you disable by patch name (-d "Name") or by index (--di N) [6](https://github.com/MorpheApp/morphe-cli/issues/23)
+          args=""
+          while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            # shell-escape names
+            args="$args -d $(printf "%q" "$name")"
+          done <<< "$DISABLES"
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
+      - name: (Optional) Provide keystore from secret
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$TOOLS_DIR/morphe.jks"
+          ls -l "$TOOLS_DIR"
+
+      - name: Patch ${{ matrix.name }} with morphe-cli
+        id: patch
+        run: |
+          set -euo pipefail
+          JAR="$(ls -1 $TOOLS_DIR/morphe-cli-*-all.jar | head -n1)"
+          MPP="$(ls -1 $TOOLS_DIR/patches-*.mpp | head -n1)"
+          APK="${{ steps.getapk.outputs.apk }}"
+          APK_VERSION="${{ steps.getapk.outputs.version }}"
+
+          # Keystore flags (CLI can use alias; add password flags if your keystore requires them)
+          KEY_ARGS=""
+          if [ -f "$TOOLS_DIR/morphe.jks" ]; then
+            KEY_ALIAS="${{ secrets.KEY_ALIAS || 'Key' }}"
+            KEY_PASS="${{ secrets.KEYSTORE_PASSWORD }}"
+            KEY_ENTRY_PASS="${{ secrets.KEY_PASSWORD }}"
+            
+            # Build keystore arguments safely
+            KEY_ARGS="--keystore=$TOOLS_DIR/morphe.jks --keystore-entry-alias=$KEY_ALIAS"
+            if [ -n "$KEY_PASS" ]; then
+              KEY_ARGS="$KEY_ARGS --keystore-password=$KEY_PASS"
+            fi
+            if [ -n "$KEY_ENTRY_PASS" ]; then
+              KEY_ARGS="$KEY_ARGS --keystore-entry-password=$KEY_ENTRY_PASS"
+            fi
+          fi
+
+          # Output directory (CLI writes a signed APK). We rely on defaults if no explicit --out is needed by your CLI build.
+          # CLI supports disabling patches by name with -d "Patch Name". [6](https://github.com/MorpheApp/morphe-cli/issues/23)
+          echo "Running morphe-cli for ${{ matrix.appId }} (v$APK_VERSION)..."
+          set -x
+          java -jar "$JAR" patch \
+            --patches="$MPP" \
+            $KEY_ARGS \
+            --temporary-files-path="$RUNNER_TEMP/morphe_${{ matrix.name }}" \
+            --purge \
+            ${{ steps.disables.outputs.args }} \
+            "$APK"
+          set +x
+
+          # Collect output: morphe-cli places output APK in the working dir by default; move anything new to OUT_DIR
+          # We grab the newest .apk after the run.
+          OUT_APK="$(ls -1t *.apk | head -n1)"
+          [ -f "$OUT_APK" ] || OUT_APK="$(ls -1t $APKS_DIR/*.apk | head -n1)" # fallback
+          
+          # Rename with version info
+          OUTPUT_NAME="${{ matrix.name }}-${PATCHES_VERSION}-v${APK_VERSION}.apk"
+          mv "$OUT_APK" "$OUT_DIR/$OUTPUT_NAME"
+          echo "output=$OUTPUT_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload patched ${{ matrix.name }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: morphe-${{ matrix.name }}-${{ env.PATCHES_VERSION }}-v${{ steps.getapk.outputs.version }}
+          path: out/${{ steps.patch.outputs.output }}
+
+  update-state:
+    needs: [check-versions, build]
+    if: always() && needs.check-versions.outputs.should-build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update state.json
+        run: |
+          set -euo pipefail
+          jq --arg patches "${{ needs.check-versions.outputs.patches-version }}" \
+             --arg cli "${{ needs.check-versions.outputs.cli-version }}" \
+             --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+             '. + {
+               "patches_version": $patches,
+               "cli_version": $cli,
+               "last_build": $timestamp,
+               "status": "success"
+             }' state.json > state.json.tmp && mv state.json.tmp state.json
+
+      - name: Commit state.json
+        run: |
+          set -euo pipefail
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add state.json
+          git commit -m "chore: update state.json - patches ${{ needs.check-versions.outputs.patches-version }}, cli ${{ needs.check-versions.outputs.cli-version }}" || true
+          git push || true

@@ -1,0 +1,17 @@
+{
+  "com.google.android.youtube": {
+    "Hide ads": true,
+    "Video ads": true,
+    "Custom branding": false,
+    "GmsCore support": true
+    
+  },
+  "com.google.android.apps.youtube.music": {
+    "Hide ads": true
+    
+  },
+  "com.reddit.frontpage": {
+    "Hide ads": true
+    
+  }
+}
