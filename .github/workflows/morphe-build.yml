@@ -192,6 +192,7 @@ jobs:
           fi
 
           npm install -g "${APKMD_NPM_SPEC}"
+          npm install --no-save --no-package-lock playwright-core
           NPM_GLOBAL_ROOT="$(npm root -g)"
           APKMD_PACKAGE_JSON="$NPM_GLOBAL_ROOT/apkmirror-downloader/package.json"
           if [ ! -f "$APKMD_PACKAGE_JSON" ]; then
@@ -225,7 +226,21 @@ jobs:
           echo "::notice::Using Node entrypoint: $APKMD_ENTRY"
           node "$APKMD_ENTRY" --help >/dev/null 2>&1 || true
 
+          PLAYWRIGHT_BROWSER_BIN="$(
+            command -v google-chrome \
+              || command -v google-chrome-stable \
+              || command -v chromium \
+              || command -v chromium-browser \
+              || true
+          )"
+          if [ -n "$PLAYWRIGHT_BROWSER_BIN" ]; then
+            echo "::notice::Detected browser for Playwright fallback: $PLAYWRIGHT_BROWSER_BIN"
+          else
+            echo "::warning::No browser binary detected for Playwright fallback (google-chrome/chromium)."
+          fi
+
           echo "entry=$APKMD_ENTRY" >> "$GITHUB_OUTPUT"
+          echo "browser=$PLAYWRIGHT_BROWSER_BIN" >> "$GITHUB_OUTPUT"
 
       - name: Prepare dirs
         run: |
@@ -438,6 +453,7 @@ jobs:
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
           APKEDITOR_JAR="${{ steps.morphe.outputs.apkeditor_jar }}"
           APKMD_ENTRY="${{ steps.apkmd.outputs.entry }}"
+          PLAYWRIGHT_BROWSER_BIN="${{ steps.apkmd.outputs.browser }}"
           APKMIRROR_ORG="${{ matrix.apkMirrorOrg }}"
           APKMIRROR_REPO="${{ matrix.apkMirrorRepo }}"
           
@@ -613,6 +629,49 @@ jobs:
             local final_name=""
             local ext=""
 
+            download_with_playwright() {
+              local source_url="$1"
+              local meta_file="$RUNNER_TEMP/apkmirror_pw_meta_${{ matrix.name }}.json"
+              local bin_file="$RUNNER_TEMP/apkmirror_pw_bin_${{ matrix.name }}"
+              local pw_name=""
+              local pw_ext=""
+
+              if [ -z "$PLAYWRIGHT_BROWSER_BIN" ] || [ ! -x "$PLAYWRIGHT_BROWSER_BIN" ]; then
+                echo "::warning::Playwright fallback unavailable: browser binary not found."
+                return 1
+              fi
+
+              rm -f "$meta_file" "$bin_file"
+              if ! node .github/scripts/apkmirror-playwright.js \
+                "$source_url" \
+                "$PLAYWRIGHT_BROWSER_BIN" \
+                "$meta_file" \
+                "$bin_file"; then
+                echo "::warning::Playwright fallback download failed."
+                return 1
+              fi
+
+              if [ ! -s "$bin_file" ]; then
+                echo "::warning::Playwright fallback did not produce an APK payload."
+                return 1
+              fi
+
+              pw_name="$(jq -r '.filename // empty' "$meta_file" 2>/dev/null || true)"
+              if [ -z "$pw_name" ]; then
+                pw_name="${APP_ID}.apk"
+              fi
+
+              pw_ext="${pw_name##*.}"
+              case "${pw_ext,,}" in
+                apk|xapk|apkm|apks) ;;
+                *) pw_name="${APP_ID}.apk" ;;
+              esac
+
+              mv -f "$bin_file" "$APKS_DIR/$pw_name"
+              echo "::notice::Playwright fallback saved: $APKS_DIR/$pw_name"
+              return 0
+            }
+
             if [ -z "$url" ]; then
               return 1
             fi
@@ -623,11 +682,15 @@ jobs:
             if ! printf '%s' "$direct_url" | grep -Eqi '(download\.php\?|\.apk($|[?])|\.xapk($|[?])|\.apkm($|[?])|\.apks($|[?]))'; then
               if ! curl -fL -A "$ua" "$direct_url" -o "$page"; then
                 echo "::warning::Could not fetch manual source page: $direct_url"
-                return 1
+                echo "::notice::Trying Playwright fallback for manual source page..."
+                download_with_playwright "$url"
+                return $?
               fi
               if grep -qi 'cannot be loaded without JavaScript and cookies enabled' "$page"; then
                 echo "::warning::Manual source page is blocked by APKMirror anti-bot challenge."
-                return 1
+                echo "::notice::Trying Playwright fallback for manual source page..."
+                download_with_playwright "$url"
+                return $?
               fi
 
               direct_url="$( \
@@ -645,18 +708,24 @@ jobs:
               fi
               if [ -z "$direct_url" ]; then
                 echo "::warning::Could not resolve direct download URL from manual page."
-                return 1
+                echo "::notice::Trying Playwright fallback for manual source page..."
+                download_with_playwright "$url"
+                return $?
               fi
             fi
 
-            if ! curl -fL -A "$ua" -D "$headers" "$direct_url" -o "$out_file"; then
+            if ! curl -fL -A "$ua" -H "Referer: $url" -D "$headers" "$direct_url" -o "$out_file"; then
               echo "::warning::Manual download failed from: $direct_url"
-              return 1
+              echo "::notice::Trying Playwright fallback for manual direct download..."
+              download_with_playwright "$url"
+              return $?
             fi
 
             if file -b --mime-type "$out_file" | grep -q '^text/'; then
               echo "::warning::Manual download returned text/html instead of APK file."
-              return 1
+              echo "::notice::Trying Playwright fallback for manual direct download..."
+              download_with_playwright "$url"
+              return $?
             fi
 
             final_name="$(
