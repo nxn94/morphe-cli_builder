@@ -1,4 +1,4 @@
-# Morphe CLI Builder
+# AutoMorpheBuilder
 
 Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches), [morphe-cli](https://github.com/MorpheApp/morphe-cli), [apkeep](https://github.com/EFForg/apkeep), and [APKEditor](https://github.com/REAndroid/APKEditor).
 
