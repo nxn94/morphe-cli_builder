@@ -188,11 +188,15 @@ jobs:
           echo "args=$args" >> "$GITHUB_OUTPUT"
 
       - name: (Optional) Provide keystore from secret
-        if: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$TOOLS_DIR/morphe.jks"
-          ls -lh "$TOOLS_DIR/morphe.jks"
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$TOOLS_DIR/morphe.jks"
+            ls -lh "$TOOLS_DIR/morphe.jks"
+            echo "::notice::Keystore loaded from secret"
+          else
+            echo "::notice::No KEYSTORE_BASE64 secret found; APK will not be signed"
+          fi
 
       - name: Patch ${{ matrix.name }} with morphe-cli
         id: patch
