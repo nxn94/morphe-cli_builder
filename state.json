@@ -1,7 +1,21 @@
 {
-  "patches_version": "none",
-  "cli_version": "none",
-  "last_build": null,
-  "status": "not-started",
-  "build_history": []
+  "patches_branch": "main",
+  "patches_version": "v1.14.0",
+  "cli_branch": "main",
+  "cli_version": "v1.4.0",
+  "last_build": "2026-02-22T18:11:56Z",
+  "status": "success",
+  "build_history": [
+    {
+      "timestamp": "2026-02-22T18:11:56Z",
+      "patches_version": "v1.14.0",
+      "cli_version": "v1.4.0",
+      "patches_branch": "main",
+      "cli_branch": "main",
+      "status": "success",
+      "run_id": "22282508656",
+      "run_number": 39,
+      "commit": "9d20b5f191fde0deebf6e208df74dd2cac80b2d5"
+    }
+  ]
 }
