@@ -382,7 +382,7 @@ jobs:
 
           KEYSTORE_B64="${{ secrets.KEYSTORE_BASE64 }}"
           KEYSTORE_PASSWORD="${{ secrets.KEYSTORE_PASSWORD }}"
-          KEY_PASSWORD="${{ secrets.KEY_PASSWORD }}"
+          KEY_PASSWORD_RAW="${{ secrets.KEY_PASSWORD }}"
           KEY_ALIAS_INPUT="${{ secrets.KEY_ALIAS }}"
 
           if [ -z "$KEYSTORE_B64" ]; then
@@ -393,10 +393,6 @@ jobs:
             echo "::error::KEYSTORE_PASSWORD secret is required (signed builds are enforced)."
             exit 1
           fi
-          if [ -z "$KEY_PASSWORD" ]; then
-            KEY_PASSWORD="$KEYSTORE_PASSWORD"
-          fi
-
           BCPROV_JAR="$(ls -1 /usr/share/java/bcprov*.jar 2>/dev/null | head -n1 || true)"
           if [ -z "$BCPROV_JAR" ] || [ ! -f "$BCPROV_JAR" ]; then
             echo "::error::BouncyCastle provider JAR not found on runner."
@@ -432,7 +428,23 @@ jobs:
           fi
           echo "::notice::Detected source keystore type: $SRC_TYPE"
 
-          IMPORT_ARGS=(
+          IMPORT_LOG="$RUNNER_TEMP/keytool_import_${{ matrix.name }}.log"
+          run_import() {
+            local mode="$1"
+            shift
+            echo "::notice::Converting keystore to BKS (mode=$mode)..."
+            set +e
+            "$@" >"$IMPORT_LOG" 2>&1
+            local rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning::keytool import failed in mode=$mode"
+              cat "$IMPORT_LOG" || true
+            fi
+            return "$rc"
+          }
+
+          IMPORT_BASE_ARGS=(
             keytool -importkeystore -noprompt
             -srckeystore "$RAW_KEYSTORE"
             -srcstoretype "$SRC_TYPE"
@@ -443,10 +455,24 @@ jobs:
             -providerclass org.bouncycastle.jce.provider.BouncyCastleProvider
             -providerpath "$BCPROV_JAR"
           )
-          if [ -n "$KEY_PASSWORD" ]; then
-            IMPORT_ARGS+=(-srckeypass "$KEY_PASSWORD" -destkeypass "$KEY_PASSWORD")
+
+          # Try import without explicit key password first. This works for the common case where
+          # key password matches store password and avoids false failures from wrong KEY_PASSWORD.
+          if ! run_import "no-keypass" "${IMPORT_BASE_ARGS[@]}"; then
+            # Retry with explicit key password if provided.
+            if [ -n "$KEY_PASSWORD_RAW" ]; then
+              rm -f "$DEST_KEYSTORE"
+              if ! run_import "explicit-keypass" "${IMPORT_BASE_ARGS[@]}" -srckeypass "$KEY_PASSWORD_RAW" -destkeypass "$KEY_PASSWORD_RAW"; then
+                echo "::error::Failed to convert keystore to BKS."
+                echo "::error::Check KEYSTORE_PASSWORD and KEY_PASSWORD secrets."
+                exit 1
+              fi
+            else
+              echo "::error::Failed to convert keystore to BKS."
+              echo "::error::If your key password differs from KEYSTORE_PASSWORD, set KEY_PASSWORD secret."
+              exit 1
+            fi
           fi
-          "${IMPORT_ARGS[@]}" >/dev/null
 
           if [ ! -f "$DEST_KEYSTORE" ]; then
             echo "::error::Failed to create converted BKS keystore."
