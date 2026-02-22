@@ -94,7 +94,7 @@ Do not use regex when these stable tags are available.
 Workflow prefers patchable `arm64-v8a` APKs and rejects split config APKs without `classes.dex`.
 For `.xapk/.apkm/.apks`, it attempts APKEditor merge to produce a normal APK before fallback extraction.
 
-If Morphe-supported version downloads return nothing, the build fails.
+The workflow tries only the latest Morphe-supported version per app. If that exact version cannot be downloaded, the build fails.
 
 ## Common Failures
 

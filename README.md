@@ -76,7 +76,7 @@ Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
 ## APK Selection Logic
 
-- Tries Morphe-supported versions from patch compatibility and downloads each via `apkmd`.
+- Resolves Morphe-supported versions from patch compatibility and downloads only the latest supported version via `apkmd`.
 - Handles `.apk`, `.xapk`, `.apkm`.
 - For split packages (`.xapk/.apkm/.apks`), tries APKEditor merge first, then falls back to dex-bearing extraction if needed.
 - Prioritizes names containing `arm64-v8a`.
@@ -126,7 +126,7 @@ Full setup steps are in [`SETUP.md`](SETUP.md).
 
 ### Error: `No package downloaded from Morphe-supported versions`
 
-The workflow now only downloads Morphe-supported versions. If none are downloadable for an app, the build fails.
+The workflow downloads only the latest Morphe-supported version. If that version is not downloadable, the build fails (no fallback to older supported versions).
 
 ### Error: `Chosen APK has no classes.dex`
 

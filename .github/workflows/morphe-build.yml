@@ -145,7 +145,8 @@ jobs:
       TOOLS_DIR: tools
       APKS_DIR: apps
       OUT_DIR: out
-      APKMD_VERSION: "2.0.8"
+      APKMD_CACHE_VERSION: "1"
+      APKMD_NPM_SPEC: "apkmirror-downloader@latest"
       PATCHES_VERSION: ${{ needs.check-versions.outputs.patches-version }}
       CLI_VERSION: ${{ needs.check-versions.outputs.cli-version }}
       PATCHES_BRANCH: ${{ needs.check-versions.outputs.patches-branch }}
@@ -170,9 +171,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: ${{ runner.os }}-apkmd-npm-${{ env.APKMD_VERSION }}
+          key: ${{ runner.os }}-apkmd-npm-${{ env.APKMD_CACHE_VERSION }}
 
       - name: Install jq & APKMirror downloader
+        id: apkmd
         run: |
           set -euo pipefail
           
@@ -186,15 +188,33 @@ jobs:
             exit 1
           fi
 
-          npm install -g "apkmirror-downloader@${APKMD_VERSION}"
+          npm install -g "${APKMD_NPM_SPEC}"
 
-          if ! command -v apkmd &> /dev/null; then
+          APKMD_PATH="$(command -v apkmd || true)"
+          if [ -z "$APKMD_PATH" ]; then
             echo "::error::APKMirror downloader (apkmd) installation failed"
             exit 1
           fi
 
-          echo "::notice::APKMirror downloader installed successfully"
-          apkmd --version || true
+          APKMD_MODE="direct"
+          if "$APKMD_PATH" --version >/dev/null 2>&1; then
+            APKMD_MODE="direct"
+          elif node "$APKMD_PATH" --version >/dev/null 2>&1; then
+            APKMD_MODE="node"
+          else
+            echo "::error::apkmd exists but cannot be executed directly or via node"
+            exit 1
+          fi
+
+          echo "::notice::APKMirror downloader installed successfully (mode=${APKMD_MODE})"
+          if [ "$APKMD_MODE" = "node" ]; then
+            node "$APKMD_PATH" --version || true
+          else
+            "$APKMD_PATH" --version || true
+          fi
+
+          echo "mode=$APKMD_MODE" >> "$GITHUB_OUTPUT"
+          echo "path=$APKMD_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Prepare dirs
         run: |
@@ -403,8 +423,11 @@ jobs:
           
           echo "::notice::Downloading APK for ${{ matrix.appId }}..."
           APP_ID="${{ matrix.appId }}"
+          TARGET_VERSION="${{ steps.targetver.outputs.version }}"
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
           APKEDITOR_JAR="${{ steps.morphe.outputs.apkeditor_jar }}"
+          APKMD_MODE="${{ steps.apkmd.outputs.mode }}"
+          APKMD_PATH="${{ steps.apkmd.outputs.path }}"
           APKMIRROR_ORG="${{ matrix.apkMirrorOrg }}"
           APKMIRROR_REPO="${{ matrix.apkMirrorRepo }}"
           
@@ -531,36 +554,35 @@ jobs:
                   }
                 ]
               }' > "$cfg"
-            apkmd "$cfg" 2>&1 | tee -a apkmd.log
+            if [ "$APKMD_MODE" = "node" ]; then
+              node "$APKMD_PATH" "$cfg" 2>&1 | tee -a apkmd.log
+            else
+              "$APKMD_PATH" "$cfg" 2>&1 | tee -a apkmd.log
+            fi
           }
 
           APK_CANDIDATE=""
           RESOLVED_DOWNLOAD_VERSION=""
-          if [ -z "$TARGET_VERSIONS" ]; then
-            echo "::error::No Morphe-supported versions were resolved for ${{ matrix.appId }}."
+          if [ -z "$TARGET_VERSION" ]; then
+            echo "::error::No latest Morphe-supported version was resolved for ${{ matrix.appId }}."
             exit 1
           fi
 
-          IFS=',' read -r -a VERSION_LIST <<< "$TARGET_VERSIONS"
-          for v in "${VERSION_LIST[@]}"; do
-            [ -z "$v" ] && continue
-            echo "::notice::Trying Morphe-supported version $v for ${{ matrix.appId }}..."
-            if download_with_apkmd "$v"; then
-              echo "::notice::apkmd completed for version $v"
-            else
-              echo "::warning::apkmd failed for version $v"
-            fi
+          echo "::notice::Trying latest Morphe-supported version $TARGET_VERSION for ${{ matrix.appId }}..."
+          if download_with_apkmd "$TARGET_VERSION"; then
+            echo "::notice::apkmd completed for version $TARGET_VERSION"
+          else
+            echo "::warning::apkmd failed for version $TARGET_VERSION"
+          fi
 
-            APK_CANDIDATE="$(find_package_candidate)"
-            if [ -n "$APK_CANDIDATE" ] && [ -f "$APK_CANDIDATE" ]; then
-              RESOLVED_DOWNLOAD_VERSION="$v"
-              break
-            fi
-          done
+          APK_CANDIDATE="$(find_package_candidate)"
+          if [ -n "$APK_CANDIDATE" ] && [ -f "$APK_CANDIDATE" ]; then
+            RESOLVED_DOWNLOAD_VERSION="$TARGET_VERSION"
+          fi
 
           if [ -z "$APK_CANDIDATE" ]; then
-            echo "::error::No package downloaded from Morphe-supported versions for ${{ matrix.appId }}."
-            echo "::notice::Attempted versions: $TARGET_VERSIONS"
+            echo "::error::No package downloaded for latest Morphe-supported version $TARGET_VERSION for ${{ matrix.appId }}."
+            echo "::notice::All compatible versions (for reference): $TARGET_VERSIONS"
             echo "::notice::apkmd log:"
             cat apkmd.log || true
             exit 1
