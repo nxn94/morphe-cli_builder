@@ -168,14 +168,47 @@ jobs:
         id: getapk
         run: |
           set -euo pipefail
-          # By default use APKPure via apkeep (no credentials). You can switch to Google Play:
-          #   apkeep -a ${{ matrix.appId }} -d google-play -e "$GOOGLE_EMAIL" -t "$GOOGLE_AAS_TOKEN" "$APKS_DIR"
-          # (see apkeep Google Play usage for AAS token instructions) [5](https://github.com/EFForg/apkeep/blob/master/USAGE-google-play.md)
-          apkeep -a "${{ matrix.appId }}" -d apk-pure "$APKS_DIR"   # APKPure default works well in CI [4](https://github.com/EFForg/apkeep)
-          APK_PATH="$(ls -1 $APKS_DIR/${{ matrix.appId }}*.apk | head -n1)"
-          if [ -z "$APK_PATH" ]; then
-            echo "No APK downloaded for ${{ matrix.appId }}"; exit 1
+          
+          echo "::notice::Downloading APK for ${{ matrix.appId }}..."
+          
+          # Create output directory if it doesn't exist
+          mkdir -p "$APKS_DIR"
+          
+          # Use apkeep to download - it should save to current directory by default
+          # Check apkeep help for proper syntax
+          if apkeep -a "${{ matrix.appId }}" -d apkpure 2>&1 | tee apkeep.log; then
+            echo "::notice::apkeep completed"
+          else
+            echo "::warning::apkeep exited with warning but may have downloaded"
           fi
+          
+          # Apkeep saves files to current directory, not to $APKS_DIR
+          # Find the downloaded APK (it saves as packagename.apk or similar)
+          if [ -f "${{ matrix.appId }}.apk" ]; then
+            mv "${{ matrix.appId }}.apk" "$APKS_DIR/"
+            APK_PATH="$APKS_DIR/${{ matrix.appId }}.apk"
+          else
+            # Try to find any APK matching the pattern in current directory
+            APK_FOUND=$(find . -maxdepth 1 -name "*${{ matrix.appId }}*.apk" -o -name "*.apk" 2>/dev/null | head -n1)
+            if [ -n "$APK_FOUND" ] && [ -f "$APK_FOUND" ]; then
+              echo "::notice::Found APK: $APK_FOUND"
+              mv "$APK_FOUND" "$APKS_DIR/"
+              APK_PATH="$(ls -1 $APKS_DIR/*.apk | head -n1)"
+            else
+              echo "::error::No APK found after download"
+              echo "::notice::Files in current directory:"
+              ls -la
+              echo "::notice::Files in $APKS_DIR:"
+              ls -la "$APKS_DIR" || true
+              exit 1
+            fi
+          fi
+          
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::APK path check failed: $APK_PATH"
+            exit 1
+          fi
+          
           echo "apk=$APK_PATH" >> "$GITHUB_OUTPUT"
           
           # Extract version from APK filename
@@ -185,7 +218,7 @@ jobs:
             APK_VERSION="unknown"
           fi
           echo "version=$APK_VERSION" >> "$GITHUB_OUTPUT"
-          echo "::notice::Downloaded ${{ matrix.name }} v$APK_VERSION"
+          echo "::notice::Downloaded ${{ matrix.name }} → $APK_PATH (v$APK_VERSION)"
 
       - name: Build disable flags from patches.json
         id: disables
