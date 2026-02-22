@@ -89,44 +89,29 @@ jobs:
 
       - name: Install jq & apkeep
         run: |
+          set -euo pipefail
+          
+          echo "::notice::Installing dependencies..."
           sudo apt-get update -y
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq curl
           
-          # apkeep: CLI APK downloader (defaults to APKPure mirror; supports Google Play with token)
-          echo "::notice::Installing apkeep..."
+          # Install Rust (needed for apkeep)
+          echo "::notice::Installing Rust toolchain..."
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          source "$HOME/.cargo/env"
           
-          # Try to find and download the apkeep binary
-          APKEEP_URL=$(gh api repos/EFForg/apkeep/releases/latest \
-            --jq '.assets[] | select(.name | contains("linux") and contains("x86_64")) | .browser_download_url' | head -1)
+          # Install apkeep from source (most reliable method)
+          echo "::notice::Building and installing apkeep from source..."
+          cargo install apkeep --locked --quiet
           
-          if [ -z "$APKEEP_URL" ]; then
-            echo "::warning::Could not find apkeep linux-x86_64 release, trying to install from source"
-            # Fallback: install rust and build from source
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            source "$HOME/.cargo/env"
-            cargo install apkeep --locked
-          else
-            echo "::notice::Downloading apkeep from: $APKEEP_URL"
-            sudo curl -fsSL -o /usr/local/bin/apkeep "$APKEEP_URL"
-            sudo chmod +x /usr/local/bin/apkeep
-            
-            # Verify the downloaded binary
-            if ! file /usr/local/bin/apkeep | grep -q "ELF"; then
-              echo "::warning::Downloaded file is not a valid ELF binary, falling back to cargo install"
-              sudo cargo install apkeep --locked
-            else
-              apkeep --version || {
-                echo "::warning::Downloaded binary failed to execute, falling back to cargo install"
-                sudo cargo install apkeep --locked
-              }
-            fi
+          # Verify installation
+          if ! command -v apkeep &> /dev/null; then
+            echo "::error::apkeep installation failed"
+            exit 1
           fi
           
-          # Final verification
-          apkeep --version || {
-            echo "::error::Failed to install apkeep"
-            exit 1
-          }
+          echo "::notice::apkeep installed successfully"
+          apkeep --version
 
       - name: Prepare dirs
         run: |
