@@ -650,15 +650,18 @@ jobs:
 
           APK_FILE="out/${{ steps.patch.outputs.output }}"
           APK_VERSION="${{ steps.getapk.outputs.version }}"
-          APP_TAG="morphe-${{ matrix.name }}-${PATCHES_VERSION}-v${APK_VERSION}"
-          APP_TITLE="Morphe ${{ matrix.name }} ${PATCHES_VERSION} (base ${APK_VERSION})"
+          VERSION_TAG="morphe-${{ matrix.name }}-${PATCHES_VERSION}-v${APK_VERSION}"
+          VERSION_TITLE="Morphe ${{ matrix.name }} ${PATCHES_VERSION} (base ${APK_VERSION})"
+          LATEST_TAG="morphe-${{ matrix.name }}-latest"
+          LATEST_TITLE="Morphe ${{ matrix.name }} latest (${PATCHES_VERSION}, base ${APK_VERSION})"
+          LATEST_ASSET_NAME="${{ matrix.name }}-latest.apk"
 
           if [ ! -f "$APK_FILE" ]; then
             echo "::error::APK file not found for release: $APK_FILE"
             exit 1
           fi
 
-          RELEASE_NOTES="$(cat <<EOF
+          RELEASE_NOTES_VERSIONED="$(cat <<EOF
           Patched app: ${{ matrix.appId }}
           Base app version: ${APK_VERSION}
           Patches version: ${PATCHES_VERSION}
@@ -666,16 +669,46 @@ jobs:
           EOF
           )"
 
-          if gh release view "$APP_TAG" >/dev/null 2>&1; then
-            echo "::notice::Release $APP_TAG already exists; updating asset and notes."
-            gh release upload "$APP_TAG" "$APK_FILE" --clobber
-            gh release edit "$APP_TAG" --title "$APP_TITLE" --notes "$RELEASE_NOTES"
-          else
-            echo "::notice::Creating release $APP_TAG"
-            gh release create "$APP_TAG" "$APK_FILE" \
-              --title "$APP_TITLE" \
-              --notes "$RELEASE_NOTES"
-          fi
+          RELEASE_NOTES_LATEST="$(cat <<EOF
+          Rolling latest release for ${{ matrix.appId }}.
+          Current base app version: ${APK_VERSION}
+          Current patches version: ${PATCHES_VERSION}
+          Current CLI version: ${CLI_VERSION}
+          Versioned tag for this build: ${VERSION_TAG}
+          EOF
+          )"
+
+          publish_release() {
+            local tag="$1"
+            local title="$2"
+            local notes="$3"
+            local asset="$4"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "::notice::Release $tag exists; updating asset and notes."
+              gh release upload "$tag" "$asset" --clobber
+              gh release edit "$tag" --title "$title" --notes "$notes"
+            else
+              echo "::notice::Creating release $tag"
+              gh release create "$tag" "$asset" \
+                --title "$title" \
+                --notes "$notes"
+            fi
+          }
+
+          # Historical immutable-style release tag per build.
+          publish_release \
+            "$VERSION_TAG" \
+            "$VERSION_TITLE" \
+            "$RELEASE_NOTES_VERSIONED" \
+            "$APK_FILE"
+
+          # Stable tag for Obtainium (no regex needed), asset name is fixed and overwritten.
+          publish_release \
+            "$LATEST_TAG" \
+            "$LATEST_TITLE" \
+            "$RELEASE_NOTES_LATEST" \
+            "$APK_FILE#${LATEST_ASSET_NAME}"
+          echo "::notice::Published tags: ${VERSION_TAG}, ${LATEST_TAG}"
 
   update-state:
     needs: [check-versions, build]
