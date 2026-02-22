@@ -54,6 +54,16 @@ Signed builds are enforced.
 
 ## Patch Configuration (`patches.json`)
 
+- Branch/channel selection for Morphe sources is configured at the top:
+  ```json
+  "__morphe": {
+    "branches": {
+      "morphe_patches": "main",
+      "morphe_cli": "main"
+    }
+  }
+  ```
+- Allowed values are `main` and `dev`.
 - `true` = enable patch
 - `false` = disable patch
 - Workflow syncs missing upstream patch keys at runtime/start and during state update.
@@ -137,4 +147,3 @@ Keystore format/password mismatch. Verify:
 ### Obtainium 404
 
 Use exact stable tags (`morphe-youtube-latest`, `morphe-ytmusic-latest`, `morphe-reddit-latest`) instead of regex-based matching.
-

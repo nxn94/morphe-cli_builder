@@ -43,6 +43,9 @@ Signed builds are enforced. Missing required signing secrets will fail the run.
 
 Edit `patches.json` to choose patches:
 
+- Set Morphe channels in the top metadata block:
+  - `"morphe_patches": "main"` or `"dev"`
+  - `"morphe_cli": "main"` or `"dev"`
 - `true` enables
 - `false` disables
 
@@ -103,4 +106,3 @@ If supported-version download attempts return nothing, workflow retries with sou
 ### `Chosen APK has no classes.dex`
 
 Downloaded package is not a patchable base APK (split/config). Workflow now fails fast to avoid invalid outputs.
-

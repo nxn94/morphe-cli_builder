@@ -1,4 +1,10 @@
 {
+  "__morphe": {
+    "branches": {
+      "morphe_patches": "main",
+      "morphe_cli": "main"
+    }
+  },
   "com.google.android.youtube": {
     "Alternative thumbnails": true,
     "Ambient mode": true,

@@ -16,6 +16,8 @@ jobs:
       should-build: ${{ steps.version-check.outputs.should-build }}
       patches-version: ${{ steps.version-check.outputs.patches-version }}
       cli-version: ${{ steps.version-check.outputs.cli-version }}
+      patches-branch: ${{ steps.version-check.outputs.patches-branch }}
+      cli-branch: ${{ steps.version-check.outputs.cli-branch }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -26,30 +28,93 @@ jobs:
         id: version-check
         run: |
           set -euo pipefail
-          
-          # Get latest versions
-          PATCHES_TAG="$(gh release view --repo MorpheApp/morphe-patches --json tagName -q .tagName)"
-          CLI_TAG="$(gh release view --repo MorpheApp/morphe-cli --json tagName -q .tagName)"
-          
+
+          # Read channel selection from patches.json metadata.
+          # Supported values: main, dev.
+          PATCHES_BRANCH="main"
+          CLI_BRANCH="main"
+          if [ -f patches.json ] && jq empty patches.json >/dev/null 2>&1; then
+            PATCHES_BRANCH="$(jq -r '(.["__morphe"]?.branches?.morphe_patches // "main") | ascii_downcase' patches.json)"
+            CLI_BRANCH="$(jq -r '(.["__morphe"]?.branches?.morphe_cli // "main") | ascii_downcase' patches.json)"
+          fi
+
+          if [ "$PATCHES_BRANCH" != "main" ] && [ "$PATCHES_BRANCH" != "dev" ]; then
+            echo "::warning::Invalid morphe_patches branch '$PATCHES_BRANCH' in patches.json. Falling back to 'main'."
+            PATCHES_BRANCH="main"
+          fi
+          if [ "$CLI_BRANCH" != "main" ] && [ "$CLI_BRANCH" != "dev" ]; then
+            echo "::warning::Invalid morphe_cli branch '$CLI_BRANCH' in patches.json. Falling back to 'main'."
+            CLI_BRANCH="main"
+          fi
+
+          resolve_release_tag() {
+            local repo="$1"
+            local branch="$2"
+            local stable_tag=""
+            local selected_tag=""
+
+            stable_tag="$(gh release view --repo "$repo" --json tagName -q .tagName || true)"
+            if [ "$branch" = "main" ]; then
+              selected_tag="$stable_tag"
+            else
+              selected_tag="$(
+                gh api "repos/${repo}/releases?per_page=100" --jq '
+                  [ .[]
+                    | select(
+                        (.draft != true)
+                        and (
+                        ((.target_commitish // "" | ascii_downcase) == "dev")
+                        or (.prerelease == true)
+                        or ((.tag_name // "" | ascii_downcase | test("(^|[-_.])(dev|beta|alpha|rc)")))
+                        )
+                      )
+                  ][0].tag_name // empty
+                ' || true
+              )"
+              if [ -z "$selected_tag" ]; then
+                echo "::warning::No dev-style release found for ${repo}; falling back to latest release tag."
+                selected_tag="$stable_tag"
+              fi
+            fi
+
+            if [ -z "$selected_tag" ]; then
+              echo "::error::Could not resolve release tag for ${repo} (branch=${branch})."
+              exit 1
+            fi
+            echo "$selected_tag"
+          }
+
+          PATCHES_TAG="$(resolve_release_tag "MorpheApp/morphe-patches" "$PATCHES_BRANCH")"
+          CLI_TAG="$(resolve_release_tag "MorpheApp/morphe-cli" "$CLI_BRANCH")"
+
           echo "patches-version=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
           echo "cli-version=$CLI_TAG" >> "$GITHUB_OUTPUT"
-          
+          echo "patches-branch=$PATCHES_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "cli-branch=$CLI_BRANCH" >> "$GITHUB_OUTPUT"
+
           # Load previous state
           if [ -f state.json ]; then
             PREV_PATCHES=$(jq -r '.patches_version // "none"' state.json)
             PREV_CLI=$(jq -r '.cli_version // "none"' state.json)
+            PREV_PATCHES_BRANCH=$(jq -r '.patches_branch // "main"' state.json)
+            PREV_CLI_BRANCH=$(jq -r '.cli_branch // "main"' state.json)
           else
             PREV_PATCHES="none"
             PREV_CLI="none"
+            PREV_PATCHES_BRANCH="main"
+            PREV_CLI_BRANCH="main"
           fi
-          
-          # Check if versions changed
-          if [ "$PATCHES_TAG" != "$PREV_PATCHES" ] || [ "$CLI_TAG" != "$PREV_CLI" ]; then
+
+          # Check if versions/channels changed
+          if [ "$PATCHES_TAG" != "$PREV_PATCHES" ] || \
+             [ "$CLI_TAG" != "$PREV_CLI" ] || \
+             [ "$PATCHES_BRANCH" != "$PREV_PATCHES_BRANCH" ] || \
+             [ "$CLI_BRANCH" != "$PREV_CLI_BRANCH" ]; then
             echo "should-build=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Version changes detected. Patches: $PREV_PATCHES → $PATCHES_TAG, CLI: $PREV_CLI → $CLI_TAG"
+            echo "::notice::Version/channel changes detected. Patches: $PREV_PATCHES_BRANCH/$PREV_PATCHES -> $PATCHES_BRANCH/$PATCHES_TAG, CLI: $PREV_CLI_BRANCH/$PREV_CLI -> $CLI_BRANCH/$CLI_TAG"
           else
             echo "should-build=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No version changes detected. Skipping build."
+            echo "::notice::No version/channel changes detected. Skipping build."
           fi
 
   build:
@@ -78,6 +143,8 @@ jobs:
       REDDIT_FALLBACK_APK_URL: "https://www.apkmirror.com/apk/redditinc/reddit/reddit-2026-04-0-release/reddit-2026-04-0-2-android-apk-download/"
       PATCHES_VERSION: ${{ needs.check-versions.outputs.patches-version }}
       CLI_VERSION: ${{ needs.check-versions.outputs.cli-version }}
+      PATCHES_BRANCH: ${{ needs.check-versions.outputs.patches-branch }}
+      CLI_BRANCH: ${{ needs.check-versions.outputs.cli-branch }}
 
     steps:
       - name: Checkout
@@ -155,6 +222,8 @@ jobs:
             echo "::error::Missing release version(s). patches='$PATCHES_TAG' cli='$CLI_TAG'"
             exit 1
           fi
+          echo "::notice::Using Morphe channels: patches=${PATCHES_BRANCH}, cli=${CLI_BRANCH}"
+          echo "::notice::Resolved Morphe versions: patches=${PATCHES_TAG}, cli=${CLI_TAG}"
 
           echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
           gh release download "$PATCHES_TAG" \
@@ -861,7 +930,9 @@ jobs:
           RELEASE_NOTES_VERSIONED="$(cat <<EOF
           Patched app: ${{ matrix.appId }}
           Base app version: ${APK_VERSION}
+          Patches channel: ${PATCHES_BRANCH}
           Patches version: ${PATCHES_VERSION}
+          CLI channel: ${CLI_BRANCH}
           CLI version: ${CLI_VERSION}
           EOF
           )"
@@ -869,7 +940,9 @@ jobs:
           RELEASE_NOTES_LATEST="$(cat <<EOF
           Rolling latest release for ${{ matrix.appId }}.
           Current base app version: ${APK_VERSION}
+          Current patches channel: ${PATCHES_BRANCH}
           Current patches version: ${PATCHES_VERSION}
+          Current CLI channel: ${CLI_BRANCH}
           Current CLI version: ${CLI_VERSION}
           Versioned tag for this build: ${VERSION_TAG}
           EOF
@@ -981,6 +1054,8 @@ jobs:
           # Update state and append build history.
           jq --arg patches "${{ needs.check-versions.outputs.patches-version }}" \
              --arg cli "${{ needs.check-versions.outputs.cli-version }}" \
+             --arg patches_branch "${{ needs.check-versions.outputs.patches-branch }}" \
+             --arg cli_branch "${{ needs.check-versions.outputs.cli-branch }}" \
              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
              --arg run_id "${{ github.run_id }}" \
              --arg sha "${{ github.sha }}" \
@@ -989,6 +1064,8 @@ jobs:
              | . + {
                "patches_version": $patches,
                "cli_version": $cli,
+               "patches_branch": $patches_branch,
+               "cli_branch": $cli_branch,
                "last_build": $timestamp,
                "status": "success"
              }
@@ -998,6 +1075,8 @@ jobs:
                       "timestamp": $timestamp,
                       "patches_version": $patches,
                       "cli_version": $cli,
+                      "patches_branch": $patches_branch,
+                      "cli_branch": $cli_branch,
                       "status": "success",
                       "run_id": $run_id,
                       "run_number": $run_number,
@@ -1012,5 +1091,5 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add state.json patches.json
-          git commit -m "chore: update state and patches config - patches ${{ needs.check-versions.outputs.patches-version }}, cli ${{ needs.check-versions.outputs.cli-version }}" || true
+          git commit -m "chore: update state and patches config - patches ${{ needs.check-versions.outputs.patches-branch }}/${{ needs.check-versions.outputs.patches-version }}, cli ${{ needs.check-versions.outputs.cli-branch }}/${{ needs.check-versions.outputs.cli-version }}" || true
           git push || true
