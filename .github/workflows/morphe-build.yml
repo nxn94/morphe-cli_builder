@@ -93,7 +93,7 @@ jobs:
           
           echo "::notice::Installing dependencies..."
           sudo apt-get update -y
-          sudo apt-get install -y jq curl
+          sudo apt-get install -y jq curl unzip
           
           # Install Rust (needed for apkeep)
           echo "::notice::Installing Rust toolchain..."
@@ -181,17 +181,17 @@ jobs:
             echo "::warning::apkeep exited with warning but may have downloaded"
           fi
           
-          # Prefer APKs downloaded to APKS_DIR.
-          APK_PATH="$(find "$APKS_DIR" -maxdepth 1 -type f -name "*.apk" | head -n1 || true)"
-          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
-            echo "::notice::Found APK in $APKS_DIR: $APK_PATH"
+          # Prefer APK/XAPK files downloaded to APKS_DIR.
+          APK_CANDIDATE="$(find "$APKS_DIR" -maxdepth 1 -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" \) -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+          if [ -n "$APK_CANDIDATE" ] && [ -f "$APK_CANDIDATE" ]; then
+            echo "::notice::Found package in $APKS_DIR: $APK_CANDIDATE"
           else
             # Fallback: check current directory and move into APKS_DIR.
-            APK_FOUND="$(find . -maxdepth 1 -type f \( -name "*${{ matrix.appId }}*.apk" -o -name "*.apk" \) | head -n1 || true)"
+            APK_FOUND="$(find . -maxdepth 1 -type f \( -name "*${{ matrix.appId }}*.apk" -o -name "*${{ matrix.appId }}*.xapk" -o -name "*${{ matrix.appId }}*.apkm" -o -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" \) | head -n1 || true)"
             if [ -n "$APK_FOUND" ] && [ -f "$APK_FOUND" ]; then
-              echo "::notice::Found APK: $APK_FOUND"
+              echo "::notice::Found package in current dir: $APK_FOUND"
               mv "$APK_FOUND" "$APKS_DIR/"
-              APK_PATH="$(find "$APKS_DIR" -maxdepth 1 -type f -name "*.apk" | head -n1 || true)"
+              APK_CANDIDATE="$APKS_DIR/$(basename "$APK_FOUND")"
             else
               echo "::error::No APK found after download"
               echo "::notice::Files in current directory:"
@@ -201,6 +201,35 @@ jobs:
               exit 1
             fi
           fi
+
+          # If downloader produced split package (.xapk/.apkm), extract an installable APK.
+          APK_PATH="$APK_CANDIDATE"
+          case "$APK_CANDIDATE" in
+            *.xapk|*.apkm)
+              echo "::notice::Split package detected ($APK_CANDIDATE); extracting APK..."
+              XAPK_TMP="$RUNNER_TEMP/xapk_${{ matrix.name }}"
+              rm -rf "$XAPK_TMP"
+              mkdir -p "$XAPK_TMP"
+              unzip -o -q "$APK_CANDIDATE" '*.apk' -d "$XAPK_TMP" || true
+
+              EXTRACTED_APK="$(find "$XAPK_TMP" -type f -name "base.apk" | head -n1 || true)"
+              if [ -z "$EXTRACTED_APK" ]; then
+                # Fallback: choose the largest APK from the archive.
+                EXTRACTED_APK="$(find "$XAPK_TMP" -type f -name "*.apk" -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+              fi
+
+              if [ -z "$EXTRACTED_APK" ] || [ ! -f "$EXTRACTED_APK" ]; then
+                echo "::error::Could not extract APK from split package: $APK_CANDIDATE"
+                echo "::notice::Archive APK contents:"
+                find "$XAPK_TMP" -type f -name "*.apk" -print || true
+                exit 1
+              fi
+
+              APK_PATH="$APKS_DIR/${{ matrix.appId }}.apk"
+              cp "$EXTRACTED_APK" "$APK_PATH"
+              echo "::notice::Extracted APK: $APK_PATH"
+              ;;
+          esac
           
           if [ ! -f "$APK_PATH" ]; then
             echo "::error::APK path check failed: $APK_PATH"
@@ -211,7 +240,7 @@ jobs:
           
           # Extract version from APK filename
           APK_FILENAME=$(basename "$APK_PATH")
-          APK_VERSION=$(echo "$APK_FILENAME" | grep -oP '\d+\.\d+\.\d+' | head -1)
+          APK_VERSION=$(echo "$APK_FILENAME" | grep -oE '[0-9]+(\.[0-9]+){2,}' | head -1 || true)
           if [ -z "$APK_VERSION" ]; then
             APK_VERSION="unknown"
           fi
