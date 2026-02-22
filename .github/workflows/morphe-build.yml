@@ -75,6 +75,7 @@ jobs:
       APKS_DIR: apps
       OUT_DIR: out
       APKEEP_CACHE_VERSION: "1"
+      REDDIT_FALLBACK_APK_URL: "https://www.apkmirror.com/apk/redditinc/reddit/reddit-2026-04-0-release/reddit-2026-04-0-2-android-apk-download/"
       PATCHES_VERSION: ${{ needs.check-versions.outputs.patches-version }}
       CLI_VERSION: ${{ needs.check-versions.outputs.cli-version }}
 
@@ -309,6 +310,7 @@ jobs:
           set -euo pipefail
           
           echo "::notice::Downloading APK for ${{ matrix.appId }}..."
+          APP_ID="${{ matrix.appId }}"
           TARGET_VERSION="${{ steps.targetver.outputs.version }}"
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
           
@@ -352,6 +354,28 @@ jobs:
           apk_has_dex() {
             local apk="$1"
             unzip -Z1 "$apk" 2>/dev/null | grep -Eq '^classes([0-9]+)?\.dex$'
+          }
+
+          best_ranked_apk_in_dir() {
+            local dir="$1"
+            find "$dir" -type f -name "*.apk" -printf '%p\n' \
+              | awk '
+                  function lower(s){ return tolower(s) }
+                  function score(path, n, b, s) {
+                    n = lower(path)
+                    b = n
+                    sub(/^.*\//, "", b)
+                    s = 0
+                    if (b == "base.apk") s += 500
+                    if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
+                    if (n ~ /nodpi/) s += 400
+                    if (n ~ /x86_64|x86/) s -= 600
+                    if (n ~ /armeabi-v7a|arm-v7a|v7a/) s -= 300
+                    if (n ~ /split_config|(^|\/)config\./) s -= 1400
+                    return s
+                  }
+                  { print score($0), $0 }
+                ' | sort -nr | cut -d' ' -f2-
           }
 
           download_with_apkeep() {
@@ -419,24 +443,7 @@ jobs:
           # If an APK was selected directly, ensure it contains dex classes and is not a split-only config APK.
           if [[ "$APK_CANDIDATE" == *.apk ]] && ! apk_has_dex "$APK_CANDIDATE"; then
             echo "::warning::Selected APK does not contain classes.dex; trying another APK candidate."
-            ALT_APK="$(
-              find "$APKS_DIR" -type f -name "*.apk" -printf '%p\n' \
-                | awk '
-                    function lower(s){ return tolower(s) }
-                    function score(path, n, s) {
-                      n = lower(path)
-                      s = 2000
-                      if (n ~ /\/base\.apk$/) s += 500
-                      if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
-                      if (n ~ /nodpi/) s += 400
-                      if (n ~ /x86_64|x86/) s -= 600
-                      if (n ~ /armeabi-v7a|arm-v7a|v7a/) s -= 300
-                      if (n ~ /split_config|(^|\/)config\./) s -= 1400
-                      return s
-                    }
-                    { print score($0), $0 }
-                  ' | sort -nr | cut -d' ' -f2-
-            )"
+            ALT_APK="$(best_ranked_apk_in_dir "$APKS_DIR")"
             while IFS= read -r candidate; do
               [ -z "$candidate" ] && continue
               if apk_has_dex "$candidate"; then
@@ -457,37 +464,24 @@ jobs:
               mkdir -p "$XAPK_TMP"
               unzip -o -q "$APK_CANDIDATE" '*.apk' -d "$XAPK_TMP" || true
 
-              # Prefer arm64-v8a + nodpi APK names. Avoid split config files when possible.
-              EXTRACTED_APK="$(
-                find "$XAPK_TMP" -type f -name "*.apk" -printf '%p\n' \
-                  | awk '
-                      function lower(s){ return tolower(s) }
-                      function score(path, n, b, s) {
-                        n = lower(path)
-                        b = n
-                        sub(/^.*\//, "", b)
-                        s = 0
-                        if (b == "base.apk") s += 500
-                        if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
-                        if (n ~ /nodpi/) s += 400
-                        if (n ~ /x86_64|x86/) s -= 600
-                        if (n ~ /armeabi-v7a|arm-v7a|v7a/) s -= 300
-                        if (n ~ /split_config/) s -= 1200
-                        return s
-                      }
-                      {
-                        s = score($0)
-                        if (best == "" || s > bests) {
-                          best = $0
-                          bests = s
-                        }
-                      }
-                      END { if (best != "") print best }
-                    '
-              )"
+              # Prefer arm64-v8a + nodpi APK names, but only if the APK contains dex content.
+              EXTRACTED_APK=""
+              while IFS= read -r candidate; do
+                [ -z "$candidate" ] && continue
+                if apk_has_dex "$candidate"; then
+                  EXTRACTED_APK="$candidate"
+                  break
+                fi
+              done < <(best_ranked_apk_in_dir "$XAPK_TMP")
               if [ -z "$EXTRACTED_APK" ]; then
-                # Last fallback: largest APK in archive.
-                EXTRACTED_APK="$(find "$XAPK_TMP" -type f -name "*.apk" -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+                # Last fallback: largest dex-bearing APK in archive.
+                while IFS= read -r candidate; do
+                  [ -z "$candidate" ] && continue
+                  if apk_has_dex "$candidate"; then
+                    EXTRACTED_APK="$candidate"
+                    break
+                  fi
+                done < <(find "$XAPK_TMP" -type f -name "*.apk" -printf '%s %p\n' | sort -nr | cut -d' ' -f2-)
               fi
 
               if [ -z "$EXTRACTED_APK" ] || [ ! -f "$EXTRACTED_APK" ]; then
@@ -506,6 +500,27 @@ jobs:
           if [ ! -f "$APK_PATH" ]; then
             echo "::error::APK path check failed: $APK_PATH"
             exit 1
+          fi
+
+          if ! apk_has_dex "$APK_PATH"; then
+            if [ "$APP_ID" = "com.reddit.frontpage" ] && [ -n "${REDDIT_FALLBACK_APK_URL}" ]; then
+              echo "::warning::Chosen Reddit APK has no classes.dex. Trying APKMirror fallback URL."
+              REDDIT_FALLBACK_APK="$APKS_DIR/${{ matrix.appId }}.fallback.apk"
+              rm -f "$REDDIT_FALLBACK_APK"
+              if curl -fL --retry 3 --retry-delay 2 \
+                -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36" \
+                "$REDDIT_FALLBACK_APK_URL" \
+                -o "$REDDIT_FALLBACK_APK"; then
+                if apk_has_dex "$REDDIT_FALLBACK_APK"; then
+                  mv -f "$REDDIT_FALLBACK_APK" "$APK_PATH"
+                  echo "::notice::Using Reddit fallback APK from APKMirror URL."
+                else
+                  echo "::warning::Reddit fallback download did not contain classes.dex (likely HTML or split artifact)."
+                fi
+              else
+                echo "::warning::Failed to download Reddit fallback URL."
+              fi
+            fi
           fi
 
           if ! apk_has_dex "$APK_PATH"; then
