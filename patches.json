@@ -92,6 +92,6 @@
     "Remove subreddit dialog": true,
     "Sanitize sharing links": true,
     "Settings for Reddit": true,
-    "Spoof signature": true
+    "Spoof signature": false
   }
 }
