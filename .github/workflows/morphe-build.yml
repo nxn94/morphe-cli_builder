@@ -176,7 +176,7 @@ jobs:
           
           # Use apkeep to download - it should save to current directory by default
           # Check apkeep help for proper syntax
-          if apkeep -a "${{ matrix.appId }}" -d apk-pure 2>&1 | tee apkeep.log; then
+          if apkeep -a "${{ matrix.appId }}" -d apk-pure $APKS_DIR 2>&1 | tee apkeep.log; then
             echo "::notice::apkeep completed"
           else
             echo "::warning::apkeep exited with warning but may have downloaded"
