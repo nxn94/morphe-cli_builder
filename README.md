@@ -81,7 +81,7 @@ Disabled patches are passed to Morphe via `-d "<patch name>"`.
 - Tries Morphe-supported versions first (derived from enabled patch compatibility).
 - If no package is downloaded from supported-version attempts, retries source default package selection.
 - Handles `.apk`, `.xapk`, `.apkm`.
-- For split packages, extracts APKs and selects a dex-bearing candidate.
+- For split packages (`.xapk/.apkm/.apks`), tries APKEditor merge first, then falls back to dex-bearing extraction if needed.
 - Prioritizes names containing `arm64-v8a` and `nodpi`.
 - Rejects dex-less APKs (`classes*.dex` required).
 - Reddit has an optional fallback URL (`REDDIT_FALLBACK_APK_URL`) if split output is not patchable.
