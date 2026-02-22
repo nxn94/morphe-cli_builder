@@ -995,8 +995,6 @@ jobs:
 
           APK_FILE="out/${{ steps.patch.outputs.output }}"
           APK_VERSION="${{ steps.getapk.outputs.version }}"
-          VERSION_TAG="morphe-${{ matrix.name }}-${PATCHES_VERSION}-v${APK_VERSION}"
-          VERSION_TITLE="Morphe ${{ matrix.name }} ${PATCHES_VERSION} (base ${APK_VERSION})"
           LATEST_TAG="morphe-${{ matrix.name }}-latest"
           LATEST_TITLE="${LATEST_TAG} (${PATCHES_VERSION}, base ${APK_VERSION})"
           LATEST_ASSET_NAME="${{ matrix.name }}-latest.apk"
@@ -1006,16 +1004,6 @@ jobs:
             exit 1
           fi
 
-          RELEASE_NOTES_VERSIONED="$(cat <<EOF
-          Patched app: ${{ matrix.appId }}
-          Base app version: ${APK_VERSION}
-          Patches channel: ${PATCHES_BRANCH}
-          Patches version: ${PATCHES_VERSION}
-          CLI channel: ${CLI_BRANCH}
-          CLI version: ${CLI_VERSION}
-          EOF
-          )"
-
           RELEASE_NOTES_LATEST="$(cat <<EOF
           Rolling latest release for ${{ matrix.appId }}.
           Current base app version: ${APK_VERSION}
@@ -1023,7 +1011,6 @@ jobs:
           Current patches version: ${PATCHES_VERSION}
           Current CLI channel: ${CLI_BRANCH}
           Current CLI version: ${CLI_VERSION}
-          Versioned tag for this build: ${VERSION_TAG}
           EOF
           )"
 
@@ -1044,12 +1031,33 @@ jobs:
             fi
           }
 
-          # Historical immutable-style release tag per build.
-          publish_release \
-            "$VERSION_TAG" \
-            "$VERSION_TITLE" \
-            "$RELEASE_NOTES_VERSIONED" \
-            "$APK_FILE"
+          cleanup_old_versioned_releases() {
+            local app_name="${{ matrix.name }}"
+            local keep_tag="$LATEST_TAG"
+            local -a old_tags=()
+
+            mapfile -t old_tags < <(
+              gh api "repos/${{ github.repository }}/releases?per_page=100" --jq '
+                .[]
+                | .tag_name
+              ' \
+              | awk -v app="$app_name" -v keep="$keep_tag" '
+                  $0 ~ ("^morphe-" app "-") && $0 != keep { print $0 }
+                ' \
+              || true
+            )
+
+            if [ "${#old_tags[@]}" -eq 0 ]; then
+              echo "::notice::No old version-pinned releases found for $app_name."
+              return 0
+            fi
+
+            for tag in "${old_tags[@]}"; do
+              [ -z "$tag" ] && continue
+              echo "::notice::Deleting old version-pinned release: $tag"
+              gh release delete "$tag" --cleanup-tag -y || true
+            done
+          }
 
           # Stable tag for Obtainium (no regex needed), asset name is fixed and overwritten.
           publish_release \
@@ -1057,7 +1065,10 @@ jobs:
             "$LATEST_TITLE" \
             "$RELEASE_NOTES_LATEST" \
             "$APK_FILE#${LATEST_ASSET_NAME}"
-          echo "::notice::Published tags: ${VERSION_TAG}, ${LATEST_TAG}"
+
+          # Keep only the rolling latest release for this app.
+          cleanup_old_versioned_releases
+          echo "::notice::Published tag: ${LATEST_TAG}"
 
   update-state:
     needs: [check-versions, build]

@@ -72,7 +72,7 @@ You get both:
 Per app releases include:
 
 - Stable tag for clients: `morphe-<app>-latest`
-- Historical tag: `morphe-<app>-<patches-version>-v<apk-version>`
+- Old version-pinned release tags are removed by the workflow.
 
 ## 7. Add All 3 Apps To Obtainium
 

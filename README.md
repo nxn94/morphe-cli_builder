@@ -1,6 +1,6 @@
 # Morphe CLI Builder
 
-Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches) and [morphe-cli](https://github.com/MorpheApp/morphe-cli).
+Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches), [morphe-cli](https://github.com/MorpheApp/morphe-cli), [apkeep](https://github.com/EFForg/apkeep), and [APKEditor](https://github.com/REAndroid/APKEditor).
 
 ## Supported Apps
 
@@ -17,7 +17,7 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 5. Extracts/selects a patchable APK (prefers `arm64-v8a` + `nodpi`, rejects dex-less split configs).
 6. Enforces signing (signed or fail).
 7. Runs `morphe-cli` and applies your patch config from `patches.json`.
-8. Publishes artifacts and GitHub Releases per app.
+8. Publishes artifacts and rolling latest GitHub Releases per app.
 9. Updates `state.json` and keeps `patches.json` synced with upstream patch list (without overriding your existing true/false edits).
 
 ## Release And Obtainium Model
@@ -28,8 +28,6 @@ Each app gets:
   - `morphe-youtube-latest`
   - `morphe-ytmusic-latest`
   - `morphe-reddit-latest`
-- A versioned historical tag per build:
-  - `morphe-<app>-<patches-version>-v<apk-version>`
 
 Use one Obtainium entry per app, all pointing to the same repository.
 
@@ -104,7 +102,9 @@ Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
 Workflow updates:
 
+- `patches_branch`
 - `patches_version`
+- `cli_branch`
 - `cli_version`
 - `last_build`
 - `status`
@@ -118,9 +118,8 @@ Workflow updates:
 ## Artifacts And Releases
 
 - Workflow artifact upload includes versioned patched APKs.
-- GitHub Releases are published for both:
-  - versioned historical tag
-  - stable `-latest` tag (fixed asset name `<app>-latest.apk`)
+- GitHub Releases only use stable `-latest` tags (fixed asset name `<app>-latest.apk`).
+- Old version-pinned `morphe-<app>-...` releases are cleaned up automatically.
 
 ## Setup
 
@@ -147,3 +146,16 @@ Keystore format/password mismatch. Verify:
 ### Obtainium 404
 
 Use exact stable tags (`morphe-youtube-latest`, `morphe-ytmusic-latest`, `morphe-reddit-latest`) instead of regex-based matching.
+
+## Thanks
+
+- [Morphe patches](https://github.com/MorpheApp/morphe-patches) for patch definitions and compatibility metadata.
+- [morphe-cli](https://github.com/MorpheApp/morphe-cli) for patching and signing.
+- [apkeep](https://github.com/EFForg/apkeep) for APK package downloads.
+- [APKEditor](https://github.com/REAndroid/APKEditor) for split package merge support.
+- [AntiSplit-M](https://github.com/AbdurazaaqMohammed/AntiSplit-M) for practical split-APK workflow inspiration.
+- [Bouncy Castle](https://www.bouncycastle.org/) for keystore/provider compatibility used in signing conversion.
+
+## License
+
+This project is licensed under the Apache License 2.0. See [`LICENSE`](LICENSE).
