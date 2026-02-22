@@ -6,7 +6,7 @@ on:
     - cron: "15 5 * * *" # daily at 05:15 UTC
 
 permissions:
-  contents: write   # needed for gh release download (read) and state.json writes
+  contents: write
   actions: read
 
 jobs:
