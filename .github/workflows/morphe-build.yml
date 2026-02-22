@@ -893,21 +893,92 @@ jobs:
       - name: Update state.json
         run: |
           set -euo pipefail
+
+          PATCHES_TAG="${{ needs.check-versions.outputs.patches-version }}"
+          PATCHES_LIST_FILE="$RUNNER_TEMP/patches-list.json"
+          DEFAULTS_FILE="$RUNNER_TEMP/default_patches.json"
+          EXISTING_FILE="$RUNNER_TEMP/existing_patches.json"
+          PKGS='["com.google.android.youtube","com.google.android.apps.youtube.music","com.reddit.frontpage"]'
+
+          # Keep repository patches.json in sync with latest upstream patches metadata
+          # while preserving any user-edited true/false values.
+          curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
+            -o "$PATCHES_LIST_FILE"
+
+          jq --argjson pkgs "$PKGS" '
+            def patch_list: (.patches // .);
+            def is_compatible($patch; $pkg):
+              if ($patch.compatiblePackages? | type) == "object" then
+                (($patch.compatiblePackages[$pkg]? | type) == "array")
+              elif ($patch.compatible_packages? | type) == "object" then
+                (($patch.compatible_packages[$pkg]? | type) == "array")
+              else
+                (($patch.compatiblePackages // $patch.compatible_packages // [])
+                  | if type == "array" then any((.name // .packageName // "") == $pkg) else false end)
+              end;
+
+            reduce $pkgs[] as $pkg ({};
+              .[$pkg] = (
+                (patch_list
+                  | map(select(is_compatible(.; $pkg)))
+                  | map({(.name): true})
+                  | add
+                ) // {}
+              )
+            )
+          ' "$PATCHES_LIST_FILE" > "$DEFAULTS_FILE"
+
+          if [ -f patches.json ] && jq empty patches.json >/dev/null 2>&1; then
+            cp patches.json "$EXISTING_FILE"
+          else
+            echo '{}' > "$EXISTING_FILE"
+          fi
+
+          jq -n --slurpfile defaults "$DEFAULTS_FILE" --slurpfile existing "$EXISTING_FILE" '
+            ($defaults[0] // {}) as $d
+            | ($existing[0] // {}) as $e
+            | ($e | if type == "object" then . else {} end) as $base
+            | reduce ($d | keys[]) as $pkg ($base;
+                .[$pkg] = (
+                  ($d[$pkg] // {})
+                  * ((.[$pkg] // {}) | if type == "object" then . else {} end)
+                )
+              )
+          ' > patches.json.tmp && mv patches.json.tmp patches.json
+
+          # Update state and append build history.
           jq --arg patches "${{ needs.check-versions.outputs.patches-version }}" \
              --arg cli "${{ needs.check-versions.outputs.cli-version }}" \
              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-             '. + {
+             --arg run_id "${{ github.run_id }}" \
+             --arg sha "${{ github.sha }}" \
+             --argjson run_number "${{ github.run_number }}" \
+             '. as $s
+             | . + {
                "patches_version": $patches,
                "cli_version": $cli,
                "last_build": $timestamp,
                "status": "success"
-             }' state.json > state.json.tmp && mv state.json.tmp state.json
+             }
+             | .build_history = (
+                 ((.build_history // [])
+                  + [{
+                      "timestamp": $timestamp,
+                      "patches_version": $patches,
+                      "cli_version": $cli,
+                      "status": "success",
+                      "run_id": $run_id,
+                      "run_number": $run_number,
+                      "commit": $sha
+                  }])
+                 | if length > 100 then .[-100:] else . end
+               )' state.json > state.json.tmp && mv state.json.tmp state.json
 
-      - name: Commit state.json
+      - name: Commit state.json and patches.json
         run: |
           set -euo pipefail
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add state.json
-          git commit -m "chore: update state.json - patches ${{ needs.check-versions.outputs.patches-version }}, cli ${{ needs.check-versions.outputs.cli-version }}" || true
+          git add state.json patches.json
+          git commit -m "chore: update state and patches config - patches ${{ needs.check-versions.outputs.patches-version }}, cli ${{ needs.check-versions.outputs.cli-version }}" || true
           git push || true
