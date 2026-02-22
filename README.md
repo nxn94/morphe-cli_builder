@@ -1,6 +1,6 @@
 # AutoMorpheBuilder
 
-Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches), [morphe-cli](https://github.com/MorpheApp/morphe-cli), [apkeep](https://github.com/EFForg/apkeep), and [APKEditor](https://github.com/REAndroid/APKEditor).
+Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches), [morphe-cli](https://github.com/MorpheApp/morphe-cli), [apkmirror-downloader](https://github.com/tanishqmanuja/apkmirror-downloader), and [APKEditor](https://github.com/REAndroid/APKEditor).
 
 ## Supported Apps
 
@@ -12,7 +12,7 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 
 1. Checks latest Morphe patch/CLI release tags.
 2. Skips build if versions are unchanged.
-3. Downloads app packages with `apkeep`.
+3. Downloads app packages from APKMirror with `apkmirror-downloader` (`apkmd`).
 4. Prefers supported app versions from Morphe patch compatibility.
 5. Extracts/selects a patchable APK (prefers `arm64-v8a`, rejects dex-less split configs).
 6. Enforces signing (signed or fail).
@@ -58,16 +58,10 @@ Signed builds are enforced.
     "branches": {
       "morphe_patches": "main",
       "morphe_cli": "main"
-    },
-    "download_urls": {
-      "com.google.android.youtube": "",
-      "com.google.android.apps.youtube.music": "",
-      "com.reddit.frontpage": ""
     }
   }
   ```
 - Allowed values are `main` and `dev`.
-- `download_urls` is optional; when set, the workflow uses that URL as a reference/fallback package and still tries the latest Morphe-supported version first.
 - `true` = enable patch
 - `false` = disable patch
 - Workflow syncs missing upstream patch keys at runtime/start and during state update.
@@ -82,12 +76,11 @@ Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
 ## APK Selection Logic
 
-- Tries Morphe-supported versions first (derived from enabled patch compatibility); optional `download_urls` can provide a reference/fallback package per app.
+- Tries Morphe-supported versions from patch compatibility and downloads each via `apkmd`.
 - Handles `.apk`, `.xapk`, `.apkm`.
 - For split packages (`.xapk/.apkm/.apks`), tries APKEditor merge first, then falls back to dex-bearing extraction if needed.
 - Prioritizes names containing `arm64-v8a`.
 - Rejects dex-less APKs (`classes*.dex` required).
-- Reddit has an optional fallback URL (`REDDIT_FALLBACK_APK_URL`) if split output is not patchable.
 
 ## Signing Flow
 
@@ -117,8 +110,7 @@ Workflow updates:
 
 ## Performance Notes
 
-- Rust/apkeep toolchain is cached (`~/.cargo`, `~/.rustup`) to reduce repeated compile time.
-- `apkeep` is rebuilt only when cache is missing.
+- npm cache (`~/.npm`) is used to speed up `apkmirror-downloader` installation.
 
 ## Artifacts And Releases
 
@@ -134,7 +126,7 @@ Full setup steps are in [`SETUP.md`](SETUP.md).
 
 ### Error: `No package downloaded from Morphe-supported versions`
 
-The workflow now tries Morphe-supported versions first. If all fail, it can fall back to `__morphe.download_urls` for that app (if configured). If neither works, the build fails.
+The workflow now only downloads Morphe-supported versions. If none are downloadable for an app, the build fails.
 
 ### Error: `Chosen APK has no classes.dex`
 
@@ -156,7 +148,7 @@ Use exact stable tags (`morphe-youtube-latest`, `morphe-ytmusic-latest`, `morphe
 
 - [Morphe patches](https://github.com/MorpheApp/morphe-patches) for patch definitions and compatibility metadata.
 - [morphe-cli](https://github.com/MorpheApp/morphe-cli) for patching and signing.
-- [apkeep](https://github.com/EFForg/apkeep) for APK package downloads.
+- [apkmirror-downloader](https://github.com/tanishqmanuja/apkmirror-downloader) for APKMirror downloads.
 - [APKEditor](https://github.com/REAndroid/APKEditor) for split package merge support.
 - [AntiSplit-M](https://github.com/AbdurazaaqMohammed/AntiSplit-M) for practical split-APK workflow inspiration.
 - [Bouncy Castle](https://www.bouncycastle.org/) for keystore/provider compatibility used in signing conversion.
