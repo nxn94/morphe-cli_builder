@@ -91,10 +91,17 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y jq
-          # apkeep: CLI APK downloader (defaults to APKPure mirror; supports Google Play with token) [4](https://github.com/EFForg/apkeep)[5](https://github.com/EFForg/apkeep/blob/master/USAGE-google-play.md)
-          sudo curl -fsSL -o /usr/local/bin/apkeep \
-            https://github.com/EFForg/apkeep/releases/latest/download/apkeep-linux-x86_64
+          # apkeep: CLI APK downloader (defaults to APKPure mirror; supports Google Play with token)
+          # Fetch the actual download URL dynamically to handle release naming changes
+          APKEEP_URL=$(gh api repos/EFForg/apkeep/releases/latest \
+            --jq '.assets[] | select(.name | contains("linux") and contains("x86_64")) | .browser_download_url' | head -1)
+          if [ -z "$APKEEP_URL" ]; then
+            echo "::error::Could not find apkeep release for linux-x86_64"
+            exit 1
+          fi
+          sudo curl -fsSL -o /usr/local/bin/apkeep "$APKEEP_URL"
           sudo chmod +x /usr/local/bin/apkeep
+          apkeep --version
 
       - name: Prepare dirs
         run: |
