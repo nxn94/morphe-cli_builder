@@ -91,17 +91,42 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y jq
+          
           # apkeep: CLI APK downloader (defaults to APKPure mirror; supports Google Play with token)
-          # Fetch the actual download URL dynamically to handle release naming changes
+          echo "::notice::Installing apkeep..."
+          
+          # Try to find and download the apkeep binary
           APKEEP_URL=$(gh api repos/EFForg/apkeep/releases/latest \
             --jq '.assets[] | select(.name | contains("linux") and contains("x86_64")) | .browser_download_url' | head -1)
+          
           if [ -z "$APKEEP_URL" ]; then
-            echo "::error::Could not find apkeep release for linux-x86_64"
-            exit 1
+            echo "::warning::Could not find apkeep linux-x86_64 release, trying to install from source"
+            # Fallback: install rust and build from source
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            source "$HOME/.cargo/env"
+            cargo install apkeep --locked
+          else
+            echo "::notice::Downloading apkeep from: $APKEEP_URL"
+            sudo curl -fsSL -o /usr/local/bin/apkeep "$APKEEP_URL"
+            sudo chmod +x /usr/local/bin/apkeep
+            
+            # Verify the downloaded binary
+            if ! file /usr/local/bin/apkeep | grep -q "ELF"; then
+              echo "::warning::Downloaded file is not a valid ELF binary, falling back to cargo install"
+              sudo cargo install apkeep --locked
+            else
+              apkeep --version || {
+                echo "::warning::Downloaded binary failed to execute, falling back to cargo install"
+                sudo cargo install apkeep --locked
+              }
+            fi
           fi
-          sudo curl -fsSL -o /usr/local/bin/apkeep "$APKEEP_URL"
-          sudo chmod +x /usr/local/bin/apkeep
-          apkeep --version
+          
+          # Final verification
+          apkeep --version || {
+            echo "::error::Failed to install apkeep"
+            exit 1
+          }
 
       - name: Prepare dirs
         run: |
