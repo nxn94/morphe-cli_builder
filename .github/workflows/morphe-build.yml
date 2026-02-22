@@ -726,12 +726,29 @@ jobs:
           fi
           KEY_ARGS=(--keystore="$KEYSTORE_FILE" --keystore-password="$KEYSTORE_PASSWORD" --keystore-entry-alias="$KEY_ALIAS" --keystore-entry-password="$KEY_ENTRY_PASS")
 
-          # Build disable flags from patches.json directly (safe handling for spaces in names).
+          # Build enabled/disabled lists from patches.json and pass disabled ones to morphe-cli.
+          ENABLED_PATCHES="$(jq -r --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries[] | select(.value == true) | .key' patches.json || true)"
+          DISABLED_PATCHES="$(jq -r --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries[] | select(.value == false) | .key' patches.json || true)"
+          ENABLED_COUNT="$(printf '%s\n' "$ENABLED_PATCHES" | sed '/^$/d' | wc -l | tr -d ' ')"
+          DISABLED_COUNT="$(printf '%s\n' "$DISABLED_PATCHES" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          if [ "$ENABLED_COUNT" -gt 0 ]; then
+            echo "::notice::Enabled patches for ${{ matrix.appId }} (${ENABLED_COUNT}): $(printf '%s\n' "$ENABLED_PATCHES" | sed '/^$/d' | paste -sd '; ' -)"
+          else
+            echo "::notice::Enabled patches for ${{ matrix.appId }}: none"
+          fi
+
+          if [ "$DISABLED_COUNT" -gt 0 ]; then
+            echo "::notice::Disabled patches for ${{ matrix.appId }} (${DISABLED_COUNT}): $(printf '%s\n' "$DISABLED_PATCHES" | sed '/^$/d' | paste -sd '; ' -)"
+          else
+            echo "::notice::Disabled patches for ${{ matrix.appId }}: none"
+          fi
+
           PATCH_ARGS=()
           while IFS= read -r patch_name; do
             [ -z "$patch_name" ] && continue
             PATCH_ARGS+=("-d" "$patch_name")
-          done < <(jq -r --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries[] | select(.value == false) | .key' patches.json)
+          done <<< "$DISABLED_PATCHES"
 
           # Create marker file so we can deterministically find CLI output files created in this step.
           MARKER="$RUNNER_TEMP/morphe_${{ matrix.name }}_start.marker"

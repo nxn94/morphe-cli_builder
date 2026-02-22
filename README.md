@@ -1,304 +1,140 @@
 # Morphe CLI Builder
 
-Automated CI/CD pipeline for building and patching Android apps using [Morphe](https://github.com/MorpheApp/morphe-patches) patches.
+Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches) and [morphe-cli](https://github.com/MorpheApp/morphe-cli).
 
-## Overview
+## Supported Apps
 
-This repository automates the process of:
-- Monitoring latest versions of Morphe patches and CLI
-- Downloading the latest APKs from APKPure
-- Applying Morphe patches to the APKs
-- Signing the patched APKs with a secure keystore
-- Uploading versioned artifacts
+- `youtube` -> `com.google.android.youtube`
+- `ytmusic` -> `com.google.android.apps.youtube.music`
+- `reddit` -> `com.reddit.frontpage`
 
-### Supported Apps
+## What The Workflow Does
 
-- **YouTube** (`com.google.android.youtube`)
-- **YouTube Music** (`com.google.android.apps.youtube.music`)
-- **Reddit** (`com.reddit.frontpage`)
+1. Checks latest Morphe patch/CLI release tags.
+2. Skips build if versions are unchanged.
+3. Downloads app packages with `apkeep`.
+4. Prefers supported app versions from Morphe patch compatibility.
+5. Extracts/selects a patchable APK (prefers `arm64-v8a` + `nodpi`, rejects dex-less split configs).
+6. Enforces signing (signed or fail).
+7. Runs `morphe-cli` and applies your patch config from `patches.json`.
+8. Publishes artifacts and GitHub Releases per app.
+9. Updates `state.json` and keeps `patches.json` synced with upstream patch list (without overriding your existing true/false edits).
 
-## Workflow Features
+## Release And Obtainium Model
 
-### Version-Based Build Skipping
+Each app gets:
 
-The workflow automatically tracks dependency versions (Morphe patches and CLI) in `state.json`. The build only runs if:
-- Patches or CLI versions have changed
-- Manual trigger via `workflow_dispatch`
-- Daily schedule (05:15 UTC)
+- A stable tag for Obtainium:
+  - `morphe-youtube-latest`
+  - `morphe-ytmusic-latest`
+  - `morphe-reddit-latest`
+- A versioned historical tag per build:
+  - `morphe-<app>-<patches-version>-v<apk-version>`
 
-This prevents unnecessary builds and reduces CI resource usage when dependencies haven't changed.
+Use one Obtainium entry per app, all pointing to the same repository.
 
-### Versioned Artifacts
+Required Obtainium fields per entry:
 
-Patched APKs are named with version information:
-```
-morphe-{app}-{patches-version}-v{apk-version}.apk
-```
+1. Source: `GitHub`
+2. Repo URL: `https://github.com/<your-user>/<your-repo>`
+3. Track tag: one of the exact `morphe-*-latest` tags above
 
-Example: `morphe-youtube-v23.02.01-v19.29.34.apk`
+No regex is required when using the stable `-latest` tags.
 
-### Secure APK Signing
+## Required Secrets
 
-The workflow signs patched APKs with your keystore stored securely in GitHub Secrets. Only you control the signing key.
+Signed builds are enforced.
 
-## Setup Instructions
-
-### 1. Create a Keystore (Android Signing Key)
-
-If you don't have a keystore yet, create one:
-
-```bash
-keytool -genkey -v -keystore morphe.jks -keyalg RSA -keysize 2048 -validity 10000 -alias Key
-```
-
-You'll be prompted for:
-- **Keystore password**: A strong password to protect the keystore file
-- **Key password**: Can be the same or different from keystore password
-- **Certificate details**: Your name, organization, country, etc.
-
-Example:
-```bash
-keytool -genkey -v -keystore morphe.jks \
-  -keyalg RSA -keysize 2048 -validity 10000 \
-  -alias Key \
-  -dname "CN=Your Name, O=Your Org, C=US"
-```
-
-### 2. Encode Keystore for GitHub Secrets
-
-Convert your keystore to Base64 for storage in GitHub Secrets:
-
-```bash
-cat morphe.jks | base64 -w 0 > morphe.jks.b64
-cat morphe.jks.b64
-```
-
-Copy the entire Base64 output.
-
-### 3. Configure GitHub Secrets
-
-Go to your GitHub repository **Settings → Secrets and variables → Actions** and create these secrets:
-
-| Secret Name | Value | Required |
+| Secret | Required | Notes |
 |---|---|---|
-| `KEYSTORE_BASE64` | Base64-encoded keystore (from step 2) | ✅ Yes |
-| `KEY_ALIAS` | Keystore alias (e.g., `Key`) | ❌ No (defaults to `Key`) |
-| `KEYSTORE_PASSWORD` | Keystore password | ❌ No |
-| `KEY_PASSWORD` | Key entry password | ❌ No |
+| `KEYSTORE_BASE64` | Yes | Base64 of your keystore file |
+| `KEYSTORE_PASSWORD` | Yes | Keystore password |
+| `KEY_ALIAS` | No | If empty, workflow picks first alias in keystore |
+| `KEY_PASSWORD` | No | Only needed when key password differs from keystore password |
 
-**Security Notes:**
-- GitHub Secrets are encrypted at rest and only exposed to Actions runs
-- The keystore is only available within the workflow, never logged
-- Passwords are optional if your keystore doesn't require them
-- Delete the local `morphe.jks` file after uploading to secrets
-- Never commit the keystore to version control
+## Patch Configuration (`patches.json`)
 
-### 4. Configure Patches
+- `true` = enable patch
+- `false` = disable patch
+- Workflow syncs missing upstream patch keys at runtime/start and during state update.
+- Existing user values are preserved (your edited true/false values are not overwritten).
 
-Edit `patches.json` to customize which patches to apply:
+During build logs, each app prints:
 
-```json
-{
-  "com.google.android.youtube": {
-    "Hide ads": true,
-    "Video ads": true,
-    "Custom branding": false,
-    "GmsCore support": true
-  },
-  "com.google.android.apps.youtube.music": {
-    "Hide ads": true
-  },
-  "com.reddit.frontpage": {
-    "Hide ads": true
-  }
-}
-```
+- `Enabled patches for <package> (...)`
+- `Disabled patches for <package> (...)`
 
-Use `true` to enable a patch, `false` to disable it. Commit this file to version control.
+Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
-## Workflow Execution
+## APK Selection Logic
 
-### Automatic Triggers
+- Tries Morphe-supported versions first (derived from enabled patch compatibility).
+- If no package is downloaded from supported-version attempts, retries source default package selection.
+- Handles `.apk`, `.xapk`, `.apkm`.
+- For split packages, extracts APKs and selects a dex-bearing candidate.
+- Prioritizes names containing `arm64-v8a` and `nodpi`.
+- Rejects dex-less APKs (`classes*.dex` required).
+- Reddit has an optional fallback URL (`REDDIT_FALLBACK_APK_URL`) if split output is not patchable.
 
-1. **Daily Schedule**: 05:15 UTC every day
-2. **Manual Trigger**: Click "Run workflow" in the Actions tab
-3. **Version Change**: Automatically (only if patches/CLI versions changed)
+## Signing Flow
 
-### Output
+- Decodes `KEYSTORE_BASE64` into `tools/source.keystore`.
+- Detects source keystore type (`PKCS12`, `JKS`, `BKS`, `UBER`).
+- Converts keystore to BKS for Morphe signing compatibility.
+- Validates alias and signs patched APK.
+- Build fails immediately if signing cannot be completed.
 
-The workflow produces:
-- **Artifacts**: Versioned patched APKs in the build artifacts
-- **state.json**: Updated with latest patch/CLI versions (committed to repo)
-- **Logs**: Build details in Actions tab
+## Build Triggers
 
-### Download Artifacts
+- Manual: `workflow_dispatch`
+- Scheduled: daily at `05:15 UTC`
+- Actual build only runs when Morphe patch or CLI version changed.
 
-1. Go to **Actions** → Latest successful workflow run
-2. Scroll to "Artifacts" section
-3. Download the desired patched APK
+## State Tracking (`state.json`)
 
-## Use with Obtainium
+Workflow updates:
 
-You can track all 3 apps from the same GitHub repository in Obtainium. You do **not** need separate repositories.
+- `patches_version`
+- `cli_version`
+- `last_build`
+- `status`
+- `build_history` (rolling latest entries, includes run id, run number, commit, timestamp)
 
-For each app, create a separate Obtainium entry:
+## Performance Notes
 
-1. Source: **GitHub**
-2. Repository URL: `https://github.com/<your-user>/<your-repo>`
-3. Release tag (exact):
-   - YouTube: `morphe-youtube-latest`
-   - YouTube Music: `morphe-ytmusic-latest`
-   - Reddit: `morphe-reddit-latest`
+- Rust/apkeep toolchain is cached (`~/.cargo`, `~/.rustup`) to reduce repeated compile time.
+- `apkeep` is rebuilt only when cache is missing.
 
-The workflow also creates versioned historical tags (`morphe-<app>-<patches-version>-v<apk-version>`), but Obtainium should follow the stable `-latest` tags above.
+## Artifacts And Releases
 
-## State File
+- Workflow artifact upload includes versioned patched APKs.
+- GitHub Releases are published for both:
+  - versioned historical tag
+  - stable `-latest` tag (fixed asset name `<app>-latest.apk`)
 
-`state.json` tracks:
-- Current Morphe patches version
-- Current Morphe CLI version
-- Last build timestamp
-- Build status
+## Setup
 
-Example:
-```json
-{
-  "patches_version": "v23.02.01",
-  "cli_version": "v1.2.3",
-  "last_build": "2026-02-21T05:15:00Z",
-  "status": "success",
-  "build_history": []
-}
-```
+Full setup steps are in [`SETUP.md`](SETUP.md).
 
 ## Troubleshooting
 
-### Build Fails: "No APK downloaded"
+### Warning: `No package downloaded from supported-version attempts`
 
-- APKPure mirror may be down. Try re-running the workflow.
-- Check your network connectivity.
-- Try downloading the APK manually from [APKPure](https://apkpure.com).
+This can be normal. It means none of the compatibility-targeted version attempts returned a package and the workflow fell back to the source default selection.
 
-### Signing Error: "Failed to sign APK"
+### Error: `Chosen APK has no classes.dex`
 
-- Verify `KEYSTORE_BASE64` secret is valid: `echo "$KEYSTORE_BASE64" | base64 -d | file -`
-- Check keystore password is correct in `KEYSTORE_PASSWORD` secret
-- Ensure `KEY_ALIAS` matches the alias in your keystore: `keytool -list -v -keystore morphe.jks`
+The selected file is not a patchable base APK (usually split/config artifact). The workflow now fails fast instead of patching invalid APKs.
 
-### Secrets Not Working
+### Error: `Wrong version of key store`
 
-- Verify secrets are set in **Settings → Secrets and variables → Actions**
-- Secrets are case-sensitive
-- Re-run the workflow after updating secrets
+Keystore format/password mismatch. Verify:
 
-### Version Check Always Skips Build
+1. `KEYSTORE_BASE64` decodes to your real keystore file
+2. `KEYSTORE_PASSWORD` is correct
+3. `KEY_PASSWORD` is set if key password differs
 
-If you want to force a build despite no version changes:
-- Use **Actions** → Click workflow → **Run workflow** (manual dispatch)
-- Manually edit `state.json` and set versions to `"none"`
+### Obtainium 404
 
-## Best Practices
+Use exact stable tags (`morphe-youtube-latest`, `morphe-ytmusic-latest`, `morphe-reddit-latest`) instead of regex-based matching.
 
-1. **Keystore Security**
-   - Use a strong, unique password
-   - Keep the keystore file safe (never commit it)
-   - Rotate the keystore periodically
-   - Use different keystores for test vs. production
-
-2. **Patches Configuration**
-   - Review new patches before enabling (`patches.json`)
-   - Test patches locally before full rollout
-   - Document your patch choices
-
-3. **Artifact Management**
-   - GitHub retains artifacts for 90 days by default
-   - Consider storing important builds elsewhere
-   - Name artifacts clearly for organization
-
-4. **Monitoring**
-   - Subscribe to workflow notifications
-   - Check the Actions tab regularly
-   - Review build logs for warnings
-
-## Advanced Configuration
-
-### Using Google Play Source
-
-To download APKs directly from Google Play instead of APKPure:
-
-1. Get a Google Play AAS token (instructions: [apkeep docs](https://github.com/EFForg/apkeep/blob/master/USAGE-google-play.md))
-2. Add GitHub Secret: `GOOGLE_AAS_TOKEN`
-3. Edit the download step in workflow to use:
-   ```yaml
-   apkeep -a "${{ matrix.appId }}" -d google-play -t "${{ secrets.GOOGLE_AAS_TOKEN }}"
-   ```
-
-### Custom Patches Directory
-
-To use custom patches instead of official MorpheApp patches:
-1. Host your patches file somewhere accessible (GitHub release, etc.)
-2. Modify the workflow "Get latest Morphe patches" step to download from your source
-
-### Disabling Apps
-
-Remove apps from the `matrix.include` section in the workflow:
-
-```yaml
-strategy:
-  fail-fast: false
-  matrix:
-    include:
-      - name: youtube
-        appId: com.google.android.youtube
-      # - name: ytmusic  # Commented out to skip
-      #   appId: com.google.android.apps.youtube.music
-```
-
-## Environment Variables
-
-The workflow uses these paths internally:
-
-| Variable | Purpose |
-|----------|---------|
-| `TOOLS_DIR` | Where Morphe patches/CLI are stored |
-| `APKS_DIR` | Where downloaded APKs are stored |
-| `OUT_DIR` | Where final patched APKs are written |
-
-## Dependencies
-
-The workflow automatically installs:
-- **Java 17** (for morphe-cli)
-- **jq** (JSON processor)
-- **apkeep** (APK downloader)
-- **GitHub CLI** (for releases)
-
-No local setup required!
-
-## License
-
-This project is provided as-is for educational purposes. Ensure you comply with:
-- App store terms of service
-- Local laws regarding app modification
-- Morphe license terms
-
-## Resources
-
-- [Morphe Patches](https://github.com/MorpheApp/morphe-patches)
-- [Morphe CLI](https://github.com/MorpheApp/morphe-cli)
-- [apkeep](https://github.com/EFForg/apkeep)
-- [Android Keystore Documentation](https://developer.android.com/studio/publish/app-signing)
-
-## Contributing
-
-Improvements and fixes welcome! Please:
-1. Test changes in a fork first
-2. Document any new secrets or variables
-3. Update this README with changes
-
-## Support
-
-For issues with:
-- **Morphe patches/CLI**: Check [MorpheApp repositories](https://github.com/MorpheApp)
-- **Keystore/signing**: See Android's [app signing guide](https://developer.android.com/studio/publish/app-signing)
-- **APKs**: Try [APKPure site](https://apkpure.com) directly
-- **This workflow**: Check GitHub Issues or Actions logs

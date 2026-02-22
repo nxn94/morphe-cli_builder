@@ -1,8 +1,8 @@
 # Setup Guide
 
-Quick start guide to get your Morphe CLI Builder up and running.
+Quick setup for signed Morphe builds and Obtainium-ready releases.
 
-## Step 1: Create a Keystore (One-time Setup)
+## 1. Create A Signing Keystore
 
 ```bash
 keytool -genkey -v -keystore morphe.jks \
@@ -11,80 +11,96 @@ keytool -genkey -v -keystore morphe.jks \
   -dname "CN=Your Name, O=Your Org, L=City, ST=State, C=US"
 ```
 
-When prompted, set a strong password (e.g., at least 16 characters with mixed case, numbers, symbols).
+Keep this file safe. Do not commit it.
 
-## Step 2: Encode Keystore for Secrets
+## 2. Base64 Encode The Keystore
 
 ```bash
 # Linux/macOS
-cat morphe.jks | base64 -w 0 > morphe.jks.b64
+base64 -w 0 morphe.jks > morphe.jks.b64
 cat morphe.jks.b64
+```
 
-# Windows (PowerShift)
+```powershell
+# Windows PowerShell
 [Convert]::ToBase64String([System.IO.File]::ReadAllBytes("morphe.jks"))
 ```
 
-Copy the entire Base64 output (it will be very long).
+## 3. Add GitHub Actions Secrets
 
-## Step 3: Add GitHub Secrets
+Repository -> `Settings` -> `Secrets and variables` -> `Actions`
 
-1. Go to your repository on GitHub
-2. Click **Settings** → **Secrets and variables** → **Actions**
-3. Click **New repository secret** and add:
+Add:
 
-| Name | Value |
-|------|-------|
-| `KEYSTORE_BASE64` | Your Base64 string from Step 2 |
-| `KEYSTORE_PASSWORD` | Your keystore password |
-| `KEY_PASSWORD` | Your key password (if different from keystore password) |
-| `KEY_ALIAS` | `Key` (or whatever alias you created) |
+- `KEYSTORE_BASE64` (required)
+- `KEYSTORE_PASSWORD` (required)
+- `KEY_ALIAS` (optional, defaults to first alias found)
+- `KEY_PASSWORD` (optional, only if key password differs)
 
-## Step 4: Configure Patches (Optional)
+Signed builds are enforced. Missing required signing secrets will fail the run.
 
-Edit `patches.json` to customize which patches to apply:
+## 4. Configure `patches.json`
 
-```bash
-nano patches.json
-```
+Edit `patches.json` to choose patches:
 
-Set `true` to enable patches, `false` to disable them.
+- `true` enables
+- `false` disables
 
-## Step 5: Run the Workflow
+Workflow behavior:
 
-Option A: **Automatic** (runs daily at 05:15 UTC)
-- No action needed! Workflow runs automatically.
+- Missing upstream patches are auto-added.
+- Existing true/false edits are preserved.
+- Build logs show enabled and disabled patch lists per app.
 
-Option B: **Manual Trigger**
-1. Go to **Actions** tab
-2. Select **Build Morphe‑patched apps**
-3. Click **Run workflow**
+## 5. Run The Workflow
 
-## Step 6: Download APKs
+- Manual: `Actions` -> `Build Morphe-patched apps` -> `Run workflow`
+- Automatic: scheduled daily at `05:15 UTC`
 
-1. Workflow completes in ~15-30 minutes
-2. Go to the workflow run
-3. Scroll to **Artifacts** section
-4. Download your patched APK
+Build only runs when Morphe patch or CLI versions changed.
 
-## Troubleshooting
+## 6. Download Outputs
 
-**Secrets not working?**
-- Double-check secret names (they're case-sensitive)
-- Verify you're in the right repository settings
+You get both:
 
-**Keystore decode error?**
-- Ensure the Base64 string is complete (long string)
-- Check you copied the entire output
+- GitHub Actions artifacts
+- GitHub Releases (per app)
 
-**APK signing fails?**
-- Verify passwords are correct in GitHub Secrets
-- Try re-encoding the keystore
+Per app releases include:
 
-**Need more help?**
-- See [README.md](README.md) for detailed documentation
-- Check Actions logs for error messages
+- Stable tag for clients: `morphe-<app>-latest`
+- Historical tag: `morphe-<app>-<patches-version>-v<apk-version>`
 
----
+## 7. Add All 3 Apps To Obtainium
 
-**Security Reminder:** Never commit `morphe.jks` or store unencrypted passwords in code!
-test
+Create 3 separate Obtainium entries (same repo, different tag).
+
+For each entry:
+
+1. Source: `GitHub`
+2. Repository URL: `https://github.com/<your-user>/<your-repo>`
+3. Track tag:
+   - YouTube: `morphe-youtube-latest`
+   - YouTube Music: `morphe-ytmusic-latest`
+   - Reddit: `morphe-reddit-latest`
+
+Do not use regex when these stable tags are available.
+
+## 8. Notes On APK Selection
+
+Workflow prefers patchable `arm64-v8a` + `nodpi` APKs and rejects split config APKs without `classes.dex`.
+
+If supported-version download attempts return nothing, workflow retries with source default package selection.
+
+## Common Failures
+
+### `Wrong version of key store`
+
+- Check `KEYSTORE_BASE64` is correct.
+- Check `KEYSTORE_PASSWORD`.
+- Set `KEY_PASSWORD` if different from keystore password.
+
+### `Chosen APK has no classes.dex`
+
+Downloaded package is not a patchable base APK (split/config). Workflow now fails fast to avoid invalid outputs.
+
