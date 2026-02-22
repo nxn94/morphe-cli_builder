@@ -122,8 +122,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # latest patches (morphe-patches) and metadata
-          PATCHES_TAG="$(gh release view --repo MorpheApp/morphe-patches --json tagName -q .tagName)"
+          # Reuse versions already resolved in check-versions job.
+          PATCHES_TAG="${PATCHES_VERSION}"
+          CLI_TAG="${CLI_VERSION}"
+          if [ -z "$PATCHES_TAG" ] || [ -z "$CLI_TAG" ]; then
+            echo "::error::Missing release version(s). patches='$PATCHES_TAG' cli='$CLI_TAG'"
+            exit 1
+          fi
+
           echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
           gh release download "$PATCHES_TAG" \
             --repo MorpheApp/morphe-patches \
@@ -133,8 +139,6 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
             -o "$TOOLS_DIR/patches-list.json"
 
-          # latest CLI (morphe-cli) fat jar
-          CLI_TAG="$(gh release view --repo MorpheApp/morphe-cli --json tagName -q .tagName)"  # releases exist on the repo [1](https://github.com/MorpheApp/morphe-cli)
           echo "cli_tag=$CLI_TAG" >> "$GITHUB_OUTPUT"
           gh release download "$CLI_TAG" \
             --repo MorpheApp/morphe-cli \
@@ -247,20 +251,6 @@ jobs:
           echo "version=$APK_VERSION" >> "$GITHUB_OUTPUT"
           echo "::notice::Downloaded ${{ matrix.name }} → $APK_PATH (v$APK_VERSION)"
 
-      - name: Build disable flags from patches.json
-        id: disables
-        run: |
-          set -euo pipefail
-          DISABLES="$(jq -r --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries | map(select(.value==false)) | .[].key' patches.json || true)"
-          # morphe-cli lets you disable by patch name (-d "Name") or by index (--di N) [6](https://github.com/MorpheApp/morphe-cli/issues/23)
-          args=""
-          while IFS= read -r name; do
-            [ -z "$name" ] && continue
-            # shell-escape names
-            args="$args -d $(printf "%q" "$name")"
-          done <<< "$DISABLES"
-          echo "args=$args" >> "$GITHUB_OUTPUT"
-
       - name: (Optional) Provide keystore from secret
         run: |
           set -euo pipefail
@@ -280,42 +270,76 @@ jobs:
           MPP="$(ls -1 $TOOLS_DIR/patches-*.mpp | head -n1)"
           APK="${{ steps.getapk.outputs.apk }}"
           APK_VERSION="${{ steps.getapk.outputs.version }}"
+          APK_NORM="${APK#./}"
 
-          # Keystore flags (CLI can use alias; add password flags if your keystore requires them)
-          KEY_ARGS=""
+          # Build keystore flags safely.
+          KEY_ARGS=()
           if [ -f "$TOOLS_DIR/morphe.jks" ]; then
             KEY_ALIAS="${{ secrets.KEY_ALIAS || 'Key' }}"
             KEY_PASS="${{ secrets.KEYSTORE_PASSWORD }}"
             KEY_ENTRY_PASS="${{ secrets.KEY_PASSWORD }}"
             
-            # Build keystore arguments safely
-            KEY_ARGS="--keystore=$TOOLS_DIR/morphe.jks --keystore-entry-alias=$KEY_ALIAS"
+            KEY_ARGS+=(--keystore="$TOOLS_DIR/morphe.jks" --keystore-entry-alias="$KEY_ALIAS")
             if [ -n "$KEY_PASS" ]; then
-              KEY_ARGS="$KEY_ARGS --keystore-password=$KEY_PASS"
+              KEY_ARGS+=(--keystore-password="$KEY_PASS")
             fi
             if [ -n "$KEY_ENTRY_PASS" ]; then
-              KEY_ARGS="$KEY_ARGS --keystore-entry-password=$KEY_ENTRY_PASS"
+              KEY_ARGS+=(--keystore-entry-password="$KEY_ENTRY_PASS")
             fi
           fi
 
-          # Output directory (CLI writes a signed APK). We rely on defaults if no explicit --out is needed by your CLI build.
-          # CLI supports disabling patches by name with -d "Patch Name". [6](https://github.com/MorpheApp/morphe-cli/issues/23)
+          # Build disable flags from patches.json directly (safe handling for spaces in names).
+          PATCH_ARGS=()
+          while IFS= read -r patch_name; do
+            [ -z "$patch_name" ] && continue
+            PATCH_ARGS+=("-d" "$patch_name")
+          done < <(jq -r --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries[] | select(.value == false) | .key' patches.json)
+
+          # Create marker file so we can deterministically find CLI output files created in this step.
+          MARKER="$RUNNER_TEMP/morphe_${{ matrix.name }}_start.marker"
+          : > "$MARKER"
+
           echo "Running morphe-cli for ${{ matrix.appId }} (v$APK_VERSION)..."
-          set -x
           java -jar "$JAR" patch \
             --patches="$MPP" \
-            $KEY_ARGS \
+            "${KEY_ARGS[@]}" \
             --temporary-files-path="$RUNNER_TEMP/morphe_${{ matrix.name }}" \
             --purge \
-            ${{ steps.disables.outputs.args }} \
+            "${PATCH_ARGS[@]}" \
             "$APK"
-          set +x
 
-          # Collect output: morphe-cli places output APK in the working dir by default; move anything new to OUT_DIR
-          # Prefer output from current directory, then fallback to APKS_DIR.
-          OUT_APK="$(find . -maxdepth 1 -type f -name "*.apk" -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+          # Collect output: prefer APKs newer than marker and not equal to input APK.
+          OUT_APK="$( \
+            { find . -maxdepth 1 -type f -name "*.apk" -newer "$MARKER" -printf '%T@ %p\n' || true; \
+              find "$APKS_DIR" -maxdepth 1 -type f -name "*.apk" -newer "$MARKER" -printf '%T@ %p\n' || true; } \
+            | sort -nr \
+            | cut -d' ' -f2- \
+            | awk -v apk="$APK_NORM" '
+                {
+                  line=$0
+                  sub(/^\.\//, "", line)
+                  if (line != "" && line != apk && out == "") out=line
+                }
+                END { if (out != "") print out }
+              ' \
+          )"
+
+          # Fallback: pick newest non-input APK if timestamps are not reliable.
           if [ -z "$OUT_APK" ] || [ ! -f "$OUT_APK" ]; then
-            OUT_APK="$(find "$APKS_DIR" -maxdepth 1 -type f -name "*.apk" -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+            OUT_APK="$( \
+              { find . -maxdepth 1 -type f -name "*.apk" -printf '%T@ %p\n' || true; \
+                find "$APKS_DIR" -maxdepth 1 -type f -name "*.apk" -printf '%T@ %p\n' || true; } \
+              | sort -nr \
+              | cut -d' ' -f2- \
+              | awk -v apk="$APK_NORM" '
+                  {
+                    line=$0
+                    sub(/^\.\//, "", line)
+                    if (line != "" && line != apk && out == "") out=line
+                  }
+                  END { if (out != "") print out }
+                ' \
+            )"
           fi
           if [ -z "$OUT_APK" ] || [ ! -f "$OUT_APK" ]; then
             echo "::error::Could not locate patched APK output"
