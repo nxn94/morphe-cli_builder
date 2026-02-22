@@ -330,10 +330,12 @@ jobs:
                     s = 0
                     if (ext == "apk") s += 2000
                     else if (ext == "xapk" || ext == "apkm") s += 500
+                    if (n ~ /\/base\.apk$/) s += 500
                     if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
                     if (n ~ /nodpi/) s += 400
                     if (n ~ /x86_64|x86/) s -= 600
                     if (n ~ /armeabi-v7a|arm-v7a|v7a/) s -= 300
+                    if (n ~ /split_config|(^|\/)config\./) s -= 1400
                     return s
                   }
                   {
@@ -345,6 +347,11 @@ jobs:
                   }
                   END { if (best != "") print best }
                 ' || true
+          }
+
+          apk_has_dex() {
+            local apk="$1"
+            unzip -Z1 "$apk" 2>/dev/null | grep -Eq '^classes([0-9]+)?\.dex$'
           }
 
           download_with_apkeep() {
@@ -409,6 +416,37 @@ jobs:
             fi
           fi
 
+          # If an APK was selected directly, ensure it contains dex classes and is not a split-only config APK.
+          if [[ "$APK_CANDIDATE" == *.apk ]] && ! apk_has_dex "$APK_CANDIDATE"; then
+            echo "::warning::Selected APK does not contain classes.dex; trying another APK candidate."
+            ALT_APK="$(
+              find "$APKS_DIR" -type f -name "*.apk" -printf '%p\n' \
+                | awk '
+                    function lower(s){ return tolower(s) }
+                    function score(path, n, s) {
+                      n = lower(path)
+                      s = 2000
+                      if (n ~ /\/base\.apk$/) s += 500
+                      if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
+                      if (n ~ /nodpi/) s += 400
+                      if (n ~ /x86_64|x86/) s -= 600
+                      if (n ~ /armeabi-v7a|arm-v7a|v7a/) s -= 300
+                      if (n ~ /split_config|(^|\/)config\./) s -= 1400
+                      return s
+                    }
+                    { print score($0), $0 }
+                  ' | sort -nr | cut -d' ' -f2-
+            )"
+            while IFS= read -r candidate; do
+              [ -z "$candidate" ] && continue
+              if apk_has_dex "$candidate"; then
+                APK_CANDIDATE="$candidate"
+                echo "::notice::Using APK with dex content: $APK_CANDIDATE"
+                break
+              fi
+            done <<< "$ALT_APK"
+          fi
+
           # If downloader produced split package (.xapk/.apkm), extract an installable APK.
           APK_PATH="$APK_CANDIDATE"
           case "$APK_CANDIDATE" in
@@ -464,9 +502,16 @@ jobs:
               echo "::notice::Extracted APK: $APK_PATH (from $(basename "$EXTRACTED_APK"))"
               ;;
           esac
-          
+
           if [ ! -f "$APK_PATH" ]; then
             echo "::error::APK path check failed: $APK_PATH"
+            exit 1
+          fi
+
+          if ! apk_has_dex "$APK_PATH"; then
+            echo "::error::Chosen APK has no classes.dex and cannot be patched: $APK_PATH"
+            echo "::notice::Files in $APKS_DIR:"
+            find "$APKS_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" \) -print || true
             exit 1
           fi
           
