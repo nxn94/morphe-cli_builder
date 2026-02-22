@@ -188,11 +188,11 @@ jobs:
           echo "args=$args" >> "$GITHUB_OUTPUT"
 
       - name: (Optional) Provide keystore from secret
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: secrets.KEYSTORE_BASE64
         run: |
           set -euo pipefail
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$TOOLS_DIR/morphe.jks"
-          ls -l "$TOOLS_DIR"
+          ls -lh "$TOOLS_DIR/morphe.jks"
 
       - name: Patch ${{ matrix.name }} with morphe-cli
         id: patch
