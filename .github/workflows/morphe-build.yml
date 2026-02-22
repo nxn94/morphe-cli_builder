@@ -180,25 +180,33 @@ jobs:
           PKGS='["com.google.android.youtube","com.google.android.apps.youtube.music","com.reddit.frontpage"]'
 
           # Build defaults for all known apps from the latest patches list.
+          # This handles both object-style and array-style compatibility schemas.
           jq --argjson pkgs "$PKGS" '
-            def patch_list: (.patches // .);
-            def is_compatible($patch; $pkg):
+            . as $src
+            |
+            def compat_pkg_names($patch):
               if ($patch.compatiblePackages? | type) == "object" then
-                (($patch.compatiblePackages[$pkg]? | type) == "array")
+                ($patch.compatiblePackages | keys)
               elif ($patch.compatible_packages? | type) == "object" then
-                (($patch.compatible_packages[$pkg]? | type) == "array")
+                ($patch.compatible_packages | keys)
+              elif ($patch.compatiblePackages? | type) == "array" then
+                ($patch.compatiblePackages | map(.name // .packageName // empty))
+              elif ($patch.compatible_packages? | type) == "array" then
+                ($patch.compatible_packages | map(.name // .packageName // empty))
               else
-                (($patch.compatiblePackages // $patch.compatible_packages // [])
-                  | if type == "array" then any((.name // .packageName // "") == $pkg) else false end)
+                []
               end;
 
             reduce $pkgs[] as $pkg ({};
               .[$pkg] = (
-                (patch_list
-                  | map(select(is_compatible(.; $pkg)))
-                  | map({(.name): true})
-                  | add
-                ) // {}
+                reduce (
+                  (($src.patches // $src)[])
+                  | select((compat_pkg_names(.) | index($pkg)) != null)
+                  | .name
+                ) as $name
+                ({};
+                  .[$name] = true
+                )
               )
             )
           ' "$TOOLS_DIR/patches-list.json" > "$DEFAULTS_FILE"
@@ -906,24 +914,31 @@ jobs:
             -o "$PATCHES_LIST_FILE"
 
           jq --argjson pkgs "$PKGS" '
-            def patch_list: (.patches // .);
-            def is_compatible($patch; $pkg):
+            . as $src
+            |
+            def compat_pkg_names($patch):
               if ($patch.compatiblePackages? | type) == "object" then
-                (($patch.compatiblePackages[$pkg]? | type) == "array")
+                ($patch.compatiblePackages | keys)
               elif ($patch.compatible_packages? | type) == "object" then
-                (($patch.compatible_packages[$pkg]? | type) == "array")
+                ($patch.compatible_packages | keys)
+              elif ($patch.compatiblePackages? | type) == "array" then
+                ($patch.compatiblePackages | map(.name // .packageName // empty))
+              elif ($patch.compatible_packages? | type) == "array" then
+                ($patch.compatible_packages | map(.name // .packageName // empty))
               else
-                (($patch.compatiblePackages // $patch.compatible_packages // [])
-                  | if type == "array" then any((.name // .packageName // "") == $pkg) else false end)
+                []
               end;
 
             reduce $pkgs[] as $pkg ({};
               .[$pkg] = (
-                (patch_list
-                  | map(select(is_compatible(.; $pkg)))
-                  | map({(.name): true})
-                  | add
-                ) // {}
+                reduce (
+                  (($src.patches // $src)[])
+                  | select((compat_pkg_names(.) | index($pkg)) != null)
+                  | .name
+                ) as $name
+                ({};
+                  .[$name] = true
+                )
               )
             )
           ' "$PATCHES_LIST_FILE" > "$DEFAULTS_FILE"
