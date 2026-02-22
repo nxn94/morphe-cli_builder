@@ -16,6 +16,8 @@ jobs:
       should-build: ${{ steps.version-check.outputs.should-build }}
       patches-version: ${{ steps.version-check.outputs.patches-version }}
       cli-version: ${{ steps.version-check.outputs.cli-version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,6 +70,7 @@ jobs:
 
     env:
       # Where we'll put tools/artifacts
+      GH_TOKEN: ${{ github.token }}
       TOOLS_DIR: tools
       APKS_DIR: apps
       OUT_DIR: out
