@@ -210,7 +210,7 @@ jobs:
         run: |
           mkdir -p "$TOOLS_DIR" "$APKS_DIR" "$OUT_DIR"
 
-      - name: Get latest Morphe patches + CLI
+      - name: Get latest Morphe patches + CLI + APKEditor
         id: morphe
         run: |
           set -euo pipefail
@@ -239,6 +239,30 @@ jobs:
             --repo MorpheApp/morphe-cli \
             --pattern 'morphe-cli-*-all.jar' \
             --dir "$TOOLS_DIR" >/dev/null
+
+          # Download APKEditor for split APK merge (.xapk/.apkm/.apks -> standalone .apk).
+          APKEDITOR_TAG="$(gh release view --repo REAndroid/APKEditor --json tagName -q .tagName)"
+          APKEDITOR_ASSET="$(
+            gh release view "$APKEDITOR_TAG" --repo REAndroid/APKEditor --json assets \
+              -q '.assets[] | select(.name | endswith(".jar")) | .name' \
+              | head -n1
+          )"
+          if [ -z "$APKEDITOR_ASSET" ]; then
+            echo "::error::Could not find APKEditor .jar asset on release ${APKEDITOR_TAG}."
+            exit 1
+          fi
+          gh release download "$APKEDITOR_TAG" \
+            --repo REAndroid/APKEditor \
+            --pattern "$APKEDITOR_ASSET" \
+            --dir "$TOOLS_DIR" >/dev/null
+
+          APKEDITOR_JAR_PATH="$TOOLS_DIR/$APKEDITOR_ASSET"
+          if [ ! -f "$APKEDITOR_JAR_PATH" ]; then
+            echo "::error::APKEditor download failed: $APKEDITOR_JAR_PATH"
+            exit 1
+          fi
+          echo "apkeditor_jar=$APKEDITOR_JAR_PATH" >> "$GITHUB_OUTPUT"
+          echo "::notice::Downloaded APKEditor ${APKEDITOR_TAG}: ${APKEDITOR_ASSET}"
 
       - name: Sync patches.json with latest patches (preserve edits)
         run: |
@@ -390,6 +414,7 @@ jobs:
           APP_ID="${{ matrix.appId }}"
           TARGET_VERSION="${{ steps.targetver.outputs.version }}"
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
+          APKEDITOR_JAR="${{ steps.morphe.outputs.apkeditor_jar }}"
           
           # Create output directory if it doesn't exist
           mkdir -p "$APKS_DIR"
@@ -398,7 +423,7 @@ jobs:
           
           find_package_candidate() {
             find "$APKS_DIR" -type f \
-              \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" \) \
+              \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) \
               -printf '%p\n' \
               | awk '
                   function lower(s){ return tolower(s) }
@@ -408,7 +433,7 @@ jobs:
                     sub(/^.*\./, "", ext)
                     s = 0
                     if (ext == "apk") s += 2000
-                    else if (ext == "xapk" || ext == "apkm") s += 500
+                    else if (ext == "xapk" || ext == "apkm" || ext == "apks") s += 500
                     if (n ~ /\/base\.apk$/) s += 500
                     if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
                     if (n ~ /nodpi/) s += 400
@@ -431,6 +456,46 @@ jobs:
           apk_has_dex() {
             local apk="$1"
             unzip -Z1 "$apk" 2>/dev/null | grep -Eq '^classes([0-9]+)?\.dex$'
+          }
+
+          merge_split_package_with_apkeditor() {
+            local split_pkg="$1"
+            local out_apk="$2"
+            local merge_log="$RUNNER_TEMP/apkeditor_merge_${{ matrix.name }}.log"
+            if [ -z "${APKEDITOR_JAR}" ] || [ ! -f "${APKEDITOR_JAR}" ]; then
+              echo "::warning::APKEditor jar not available; cannot merge split package."
+              return 1
+            fi
+
+            rm -f "$out_apk"
+            echo "::notice::Merging split package with APKEditor: $split_pkg"
+            set +e
+            java -jar "${APKEDITOR_JAR}" m -i "$split_pkg" -o "$out_apk" >"$merge_log" 2>&1
+            local rc=$?
+            set -e
+            if [ "$rc" -eq 0 ] && [ ! -f "$out_apk" ]; then
+              # Some APKEditor versions ignore -o and emit *_merged.apk next to input.
+              local default_merged="${split_pkg%.*}_merged.apk"
+              local fallback_merged
+              fallback_merged="$(find "$(dirname "$split_pkg")" -maxdepth 1 -type f -name "*_merged.apk" -printf '%p\n' | head -n1 || true)"
+              if [ -f "$default_merged" ]; then
+                mv -f "$default_merged" "$out_apk"
+              elif [ -n "$fallback_merged" ] && [ -f "$fallback_merged" ]; then
+                mv -f "$fallback_merged" "$out_apk"
+              fi
+            fi
+
+            if [ "$rc" -ne 0 ] || [ ! -f "$out_apk" ]; then
+              echo "::warning::APKEditor merge failed for $split_pkg"
+              cat "$merge_log" || true
+              return 1
+            fi
+
+            if ! apk_has_dex "$out_apk"; then
+              echo "::warning::APKEditor output has no classes.dex: $out_apk"
+              return 1
+            fi
+            return 0
           }
 
           best_ranked_apk_in_dir() {
@@ -500,7 +565,7 @@ jobs:
             echo "::notice::Found package in $APKS_DIR: $APK_CANDIDATE"
           else
             # Fallback: check current directory and move into APKS_DIR.
-            APK_FOUND="$(find . -maxdepth 1 -type f \( -name "*${{ matrix.appId }}*.apk" -o -name "*${{ matrix.appId }}*.xapk" -o -name "*${{ matrix.appId }}*.apkm" -o -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" \) | head -n1 || true)"
+            APK_FOUND="$(find . -maxdepth 1 -type f \( -name "*${{ matrix.appId }}*.apk" -o -name "*${{ matrix.appId }}*.xapk" -o -name "*${{ matrix.appId }}*.apkm" -o -name "*${{ matrix.appId }}*.apks" -o -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1 || true)"
             if [ -n "$APK_FOUND" ] && [ -f "$APK_FOUND" ]; then
               echo "::notice::Found package in current dir: $APK_FOUND"
               mv "$APK_FOUND" "$APKS_DIR/"
@@ -531,46 +596,60 @@ jobs:
             done <<< "$ALT_APK"
           fi
 
-          # If downloader produced split package (.xapk/.apkm), extract an installable APK.
+          # If we still have a dex-less APK candidate, prefer any split package and merge it.
+          if [[ "$APK_CANDIDATE" == *.apk ]] && ! apk_has_dex "$APK_CANDIDATE"; then
+            SPLIT_FOUND="$(find "$APKS_DIR" -maxdepth 1 -type f \( -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1 || true)"
+            if [ -n "$SPLIT_FOUND" ]; then
+              echo "::warning::Switching to split package for merge: $SPLIT_FOUND"
+              APK_CANDIDATE="$SPLIT_FOUND"
+            fi
+          fi
+
+          # If downloader produced split package (.xapk/.apkm/.apks), merge to an installable APK.
           APK_PATH="$APK_CANDIDATE"
           case "$APK_CANDIDATE" in
-            *.xapk|*.apkm)
-              echo "::notice::Split package detected ($APK_CANDIDATE); extracting APK..."
-              XAPK_TMP="$RUNNER_TEMP/xapk_${{ matrix.name }}"
-              rm -rf "$XAPK_TMP"
-              mkdir -p "$XAPK_TMP"
-              unzip -o -q "$APK_CANDIDATE" '*.apk' -d "$XAPK_TMP" || true
+            *.xapk|*.apkm|*.apks)
+              echo "::notice::Split package detected ($APK_CANDIDATE); attempting APKEditor merge..."
+              APK_PATH="$APKS_DIR/${{ matrix.appId }}.apk"
+              if merge_split_package_with_apkeditor "$APK_CANDIDATE" "$APK_PATH"; then
+                echo "::notice::Merged APK created: $APK_PATH"
+              else
+                echo "::warning::APKEditor merge failed; falling back to direct APK extraction."
+                XAPK_TMP="$RUNNER_TEMP/xapk_${{ matrix.name }}"
+                rm -rf "$XAPK_TMP"
+                mkdir -p "$XAPK_TMP"
+                unzip -o -q "$APK_CANDIDATE" '*.apk' -d "$XAPK_TMP" || true
 
-              # Prefer arm64-v8a + nodpi APK names, but only if the APK contains dex content.
-              EXTRACTED_APK=""
-              while IFS= read -r candidate; do
-                [ -z "$candidate" ] && continue
-                if apk_has_dex "$candidate"; then
-                  EXTRACTED_APK="$candidate"
-                  break
-                fi
-              done < <(best_ranked_apk_in_dir "$XAPK_TMP")
-              if [ -z "$EXTRACTED_APK" ]; then
-                # Last fallback: largest dex-bearing APK in archive.
+                # Prefer arm64-v8a + nodpi APK names, but only if the APK contains dex content.
+                EXTRACTED_APK=""
                 while IFS= read -r candidate; do
                   [ -z "$candidate" ] && continue
                   if apk_has_dex "$candidate"; then
                     EXTRACTED_APK="$candidate"
                     break
                   fi
-                done < <(find "$XAPK_TMP" -type f -name "*.apk" -printf '%s %p\n' | sort -nr | cut -d' ' -f2-)
-              fi
+                done < <(best_ranked_apk_in_dir "$XAPK_TMP")
+                if [ -z "$EXTRACTED_APK" ]; then
+                  # Last fallback: largest dex-bearing APK in archive.
+                  while IFS= read -r candidate; do
+                    [ -z "$candidate" ] && continue
+                    if apk_has_dex "$candidate"; then
+                      EXTRACTED_APK="$candidate"
+                      break
+                    fi
+                  done < <(find "$XAPK_TMP" -type f -name "*.apk" -printf '%s %p\n' | sort -nr | cut -d' ' -f2-)
+                fi
 
-              if [ -z "$EXTRACTED_APK" ] || [ ! -f "$EXTRACTED_APK" ]; then
-                echo "::error::Could not extract APK from split package: $APK_CANDIDATE"
-                echo "::notice::Archive APK contents:"
-                find "$XAPK_TMP" -type f -name "*.apk" -print || true
-                exit 1
-              fi
+                if [ -z "$EXTRACTED_APK" ] || [ ! -f "$EXTRACTED_APK" ]; then
+                  echo "::error::Could not extract APK from split package: $APK_CANDIDATE"
+                  echo "::notice::Archive APK contents:"
+                  find "$XAPK_TMP" -type f -name "*.apk" -print || true
+                  exit 1
+                fi
 
-              APK_PATH="$APKS_DIR/${{ matrix.appId }}.apk"
-              cp "$EXTRACTED_APK" "$APK_PATH"
-              echo "::notice::Extracted APK: $APK_PATH (from $(basename "$EXTRACTED_APK"))"
+                cp "$EXTRACTED_APK" "$APK_PATH"
+                echo "::notice::Extracted APK: $APK_PATH (from $(basename "$EXTRACTED_APK"))"
+              fi
               ;;
           esac
 
@@ -603,7 +682,7 @@ jobs:
           if ! apk_has_dex "$APK_PATH"; then
             echo "::error::Chosen APK has no classes.dex and cannot be patched: $APK_PATH"
             echo "::notice::Files in $APKS_DIR:"
-            find "$APKS_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" \) -print || true
+            find "$APKS_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) -print || true
             exit 1
           fi
           

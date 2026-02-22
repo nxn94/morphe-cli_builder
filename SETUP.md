@@ -92,6 +92,7 @@ Do not use regex when these stable tags are available.
 ## 8. Notes On APK Selection
 
 Workflow prefers patchable `arm64-v8a` + `nodpi` APKs and rejects split config APKs without `classes.dex`.
+For `.xapk/.apkm/.apks`, it attempts APKEditor merge to produce a normal APK before fallback extraction.
 
 If supported-version download attempts return nothing, workflow retries with source default package selection.
 
