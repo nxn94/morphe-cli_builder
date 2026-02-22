@@ -20,9 +20,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install GitHub CLI
-        uses: cli/cli-action@v2
-
       - name: Check latest versions
         id: version-check
         run: |
@@ -99,9 +96,6 @@ jobs:
       - name: Prepare dirs
         run: |
           mkdir -p "$TOOLS_DIR" "$APKS_DIR" "$OUT_DIR"
-
-      - name: Install GitHub CLI
-        uses: cli/cli-action@v2
 
       - name: Get latest Morphe patches + CLI
         id: morphe
