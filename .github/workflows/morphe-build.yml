@@ -336,6 +336,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          HAS_FORCED_URL="$(jq -r --arg pkg "${{ matrix.appId }}" '((.["__morphe"]?.download_urls?[$pkg] // "") | length) > 0' patches.json)"
           DISABLED_PATCHES_JSON="$(jq -c --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries | map(select(.value == false) | .key)' patches.json)"
 
           STRICT_VERSIONS="$(
@@ -398,11 +399,16 @@ jobs:
           if [ -n "$TARGET_VERSION" ]; then
             echo "version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
             echo "versions=$TARGET_VERSIONS" >> "$GITHUB_OUTPUT"
-            echo "::notice::Selected most compatible version for ${{ matrix.appId }}: $TARGET_VERSION"
+            echo "::notice::Selected Morphe-recommended version for ${{ matrix.appId }}: $TARGET_VERSION"
           else
             echo "version=" >> "$GITHUB_OUTPUT"
             echo "versions=" >> "$GITHUB_OUTPUT"
-            echo "::warning::Could not resolve a supported version from patches list; falling back to latest available download."
+            if [ "$HAS_FORCED_URL" = "true" ]; then
+              echo "::warning::Could not resolve Morphe-supported versions from patches list; forced URL is configured for fallback."
+            else
+              echo "::error::Could not resolve a Morphe-supported version from patches list."
+              exit 1
+            fi
           fi
 
       - name: Download supported APK for ${{ matrix.appId }}
@@ -415,6 +421,7 @@ jobs:
           TARGET_VERSION="${{ steps.targetver.outputs.version }}"
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
           APKEDITOR_JAR="${{ steps.morphe.outputs.apkeditor_jar }}"
+          FORCED_APK_URL="$(jq -r --arg pkg "$APP_ID" '.["__morphe"]?.download_urls?[$pkg] // ""' patches.json)"
           
           # Create output directory if it doesn't exist
           mkdir -p "$APKS_DIR"
@@ -422,10 +429,11 @@ jobs:
           : > apkeep.log
           
           find_package_candidate() {
+            local preferred_kind="${1:-}"
             find "$APKS_DIR" -type f \
               \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) \
               -printf '%p\n' \
-              | awk '
+              | awk -v pref="$preferred_kind" '
                   function lower(s){ return tolower(s) }
                   function score(path, n, ext, s) {
                     n = lower(path)
@@ -436,10 +444,16 @@ jobs:
                     else if (ext == "xapk" || ext == "apkm" || ext == "apks") s += 500
                     if (n ~ /\/base\.apk$/) s += 500
                     if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
-                    if (n ~ /nodpi/) s += 400
                     if (n ~ /x86_64|x86/) s -= 600
                     if (n ~ /armeabi-v7a|arm-v7a|v7a/) s -= 300
                     if (n ~ /split_config|(^|\/)config\./) s -= 1400
+                    if (pref == "apk") {
+                      if (ext == "apk") s += 1200
+                      else s -= 1200
+                    } else if (pref == "split") {
+                      if (ext == "apk") s -= 300
+                      else s += 400
+                    }
                     return s
                   }
                   {
@@ -456,6 +470,114 @@ jobs:
           apk_has_dex() {
             local apk="$1"
             unzip -Z1 "$apk" 2>/dev/null | grep -Eq '^classes([0-9]+)?\.dex$'
+          }
+
+          package_has_embedded_apks() {
+            local file="$1"
+            unzip -Z1 "$file" 2>/dev/null | grep -Eiq '\.apk$'
+          }
+
+          looks_like_package_file() {
+            local file="$1"
+            if apk_has_dex "$file"; then
+              return 0
+            fi
+            if package_has_embedded_apks "$file"; then
+              return 0
+            fi
+            return 1
+          }
+
+          normalize_url() {
+            local url="$1"
+            if [[ "$url" =~ ^https?:// ]]; then
+              printf '%s\n' "$url"
+            elif [[ "$url" == /* ]]; then
+              printf 'https://www.apkmirror.com%s\n' "$url"
+            else
+              printf 'https://www.apkmirror.com/%s\n' "$url"
+            fi
+          }
+
+          fetch_url_with_apkmirror_fallback() {
+            local url="$1"
+            local out="$2"
+            rm -f "$out"
+
+            if curl -fL --retry 3 --retry-delay 2 \
+              -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36" \
+              "$url" \
+              -o "$out"; then
+              if looks_like_package_file "$out"; then
+                return 0
+              fi
+            fi
+
+            case "$url" in
+              *apkmirror.com*)
+                local html1 html2 link1 link2
+                html1="$(curl -fsSL -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36" "$url" || true)"
+                link1="$(
+                  {
+                    printf '%s' "$html1" \
+                      | grep -Eo 'href="[^"]*/download/\?[^"]+"' \
+                      | head -n1 \
+                      | sed -E 's/^href="|"$//g;s/&amp;/\&/g'
+                  } || true
+                )"
+                if [ -z "$link1" ]; then
+                  return 1
+                fi
+                link1="$(normalize_url "$link1")"
+
+                html2="$(curl -fsSL -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36" "$link1" || true)"
+                link2="$(
+                  {
+                    printf '%s' "$html2" \
+                      | grep -Eo 'href="[^"]*download\.php\?[^"]+"' \
+                      | head -n1 \
+                      | sed -E 's/^href="|"$//g;s/&amp;/\&/g'
+                  } || true
+                )"
+                if [ -z "$link2" ]; then
+                  return 1
+                fi
+                link2="$(normalize_url "$link2")"
+                curl -fL --retry 3 --retry-delay 2 \
+                  -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36" \
+                  "$link2" \
+                  -o "$out" || return 1
+                looks_like_package_file "$out"
+                return $?
+                ;;
+            esac
+
+            return 1
+          }
+
+          download_reference_package() {
+            local url="$1"
+            local out_base="$2"
+            local tmp_file="$RUNNER_TEMP/reference_${{ matrix.name }}.pkg"
+            local out_file kind
+            rm -f "$tmp_file"
+
+            if ! fetch_url_with_apkmirror_fallback "$url" "$tmp_file"; then
+              return 1
+            fi
+
+            if apk_has_dex "$tmp_file"; then
+              kind="apk"
+              out_file="${out_base}.apk"
+            elif package_has_embedded_apks "$tmp_file"; then
+              kind="split"
+              out_file="${out_base}.xapk"
+            else
+              return 1
+            fi
+
+            mv "$tmp_file" "$out_file"
+            printf '%s|%s\n' "$out_file" "$kind"
           }
 
           merge_split_package_with_apkeditor() {
@@ -510,7 +632,6 @@ jobs:
                     s = 0
                     if (b == "base.apk") s += 500
                     if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
-                    if (n ~ /nodpi/) s += 400
                     if (n ~ /x86_64|x86/) s -= 600
                     if (n ~ /armeabi-v7a|arm-v7a|v7a/) s -= 300
                     if (n ~ /split_config|(^|\/)config\./) s -= 1400
@@ -531,34 +652,53 @@ jobs:
 
           APK_CANDIDATE=""
           RESOLVED_DOWNLOAD_VERSION=""
+          REFERENCE_PACKAGE=""
+          REFERENCE_KIND=""
+
+          if [ -n "$FORCED_APK_URL" ]; then
+            echo "::notice::Fetching reference package from forced URL for $APP_ID..."
+            REFERENCE_RESULT="$(download_reference_package "$FORCED_APK_URL" "$APKS_DIR/reference_${{ matrix.name }}" || true)"
+            if [ -n "$REFERENCE_RESULT" ]; then
+              REFERENCE_PACKAGE="${REFERENCE_RESULT%%|*}"
+              REFERENCE_KIND="${REFERENCE_RESULT##*|}"
+              echo "::notice::Reference package downloaded: $REFERENCE_PACKAGE (kind=$REFERENCE_KIND)"
+            else
+              echo "::warning::Forced URL for $APP_ID could not be resolved to a downloadable package."
+            fi
+          fi
 
           if [ -n "$TARGET_VERSIONS" ]; then
             IFS=',' read -r -a VERSION_LIST <<< "$TARGET_VERSIONS"
             for v in "${VERSION_LIST[@]}"; do
               [ -z "$v" ] && continue
-              echo "::notice::Trying supported version $v for ${{ matrix.appId }}..."
+              echo "::notice::Trying Morphe-supported version $v for ${{ matrix.appId }}..."
               if download_with_apkeep "$v"; then
                 echo "::notice::apkeep completed for version $v"
               else
                 echo "::warning::apkeep failed for version $v"
               fi
 
-              APK_CANDIDATE="$(find_package_candidate)"
+              APK_CANDIDATE="$(find_package_candidate "$REFERENCE_KIND")"
               if [ -n "$APK_CANDIDATE" ] && [ -f "$APK_CANDIDATE" ]; then
                 RESOLVED_DOWNLOAD_VERSION="$v"
                 break
               fi
             done
+          else
+            echo "::warning::No Morphe-supported versions were resolved for ${{ matrix.appId }}."
           fi
 
           if [ -z "$APK_CANDIDATE" ]; then
-            echo "::notice::No package downloaded from supported-version attempts. Retrying source default package selection."
-            if download_with_apkeep ""; then
-              echo "::notice::apkeep completed for latest available package"
+            if [ -n "$REFERENCE_PACKAGE" ] && [ -f "$REFERENCE_PACKAGE" ]; then
+              APK_CANDIDATE="$REFERENCE_PACKAGE"
+              echo "::warning::Falling back to reference package for $APP_ID: $APK_CANDIDATE"
             else
-              echo "::warning::apkeep failed for latest available package"
+              echo "::error::No package downloaded from Morphe-supported versions for ${{ matrix.appId }}."
+              echo "::notice::Attempted versions: $TARGET_VERSIONS"
+              echo "::notice::apkeep log:"
+              cat apkeep.log || true
+              exit 1
             fi
-            APK_CANDIDATE="$(find_package_candidate)"
           fi
 
           if [ -n "$APK_CANDIDATE" ] && [ -f "$APK_CANDIDATE" ]; then
@@ -620,7 +760,7 @@ jobs:
                 mkdir -p "$XAPK_TMP"
                 unzip -o -q "$APK_CANDIDATE" '*.apk' -d "$XAPK_TMP" || true
 
-                # Prefer arm64-v8a + nodpi APK names, but only if the APK contains dex content.
+                # Prefer arm64-v8a APK names, but only if the APK contains dex content.
                 EXTRACTED_APK=""
                 while IFS= read -r candidate; do
                   [ -z "$candidate" ] && continue

@@ -46,6 +46,7 @@ Edit `patches.json` to choose patches:
 - Set Morphe channels in the top metadata block:
   - `"morphe_patches": "main"` or `"dev"`
   - `"morphe_cli": "main"` or `"dev"`
+- Optional: set exact app download URLs in `__morphe.download_urls` to use the same APK link Morphe app recommends as reference/fallback.
 - `true` enables
 - `false` disables
 
@@ -91,10 +92,10 @@ Do not use regex when these stable tags are available.
 
 ## 8. Notes On APK Selection
 
-Workflow prefers patchable `arm64-v8a` + `nodpi` APKs and rejects split config APKs without `classes.dex`.
+Workflow prefers patchable `arm64-v8a` APKs and rejects split config APKs without `classes.dex`.
 For `.xapk/.apkm/.apks`, it attempts APKEditor merge to produce a normal APK before fallback extraction.
 
-If supported-version download attempts return nothing, workflow retries with source default package selection.
+If Morphe-supported version downloads return nothing, workflow falls back to `__morphe.download_urls` for that app (if configured), otherwise it fails.
 
 ## Common Failures
 

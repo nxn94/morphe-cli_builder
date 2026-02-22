@@ -3,6 +3,11 @@
     "branches": {
       "morphe_patches": "main",
       "morphe_cli": "main"
+    },
+    "download_urls": {
+      "com.google.android.youtube": "https://www.apkmirror.com/apk/google-inc/youtube/youtube-20-40-45-release/youtube-20-40-45-2-android-apk-download/",
+      "com.google.android.apps.youtube.music": "https://www.apkmirror.com/apk/google-inc/youtube-music/youtube-music-8-40-54-release/youtube-music-8-40-54-3-android-apk-download/",
+      "com.reddit.frontpage": "https://www.apkmirror.com/apk/redditinc/reddit/reddit-2026-04-0-release/reddit-2026-04-0-2-android-apk-download/"
     }
   },
   "com.google.android.youtube": {
@@ -16,7 +21,7 @@
     "Change start page": true,
     "Check watch history domain name resolution": true,
     "Copy video URL": true,
-    "Custom branding": false,
+    "Custom branding": true,
     "Custom player overlay opacity": true,
     "Disable DRC audio": true,
     "Disable double tap actions": true,
@@ -98,6 +103,6 @@
     "Remove subreddit dialog": true,
     "Sanitize sharing links": true,
     "Settings for Reddit": true,
-    "Spoof signature": false
+    "Spoof signature": true
   }
 }

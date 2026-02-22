@@ -14,7 +14,7 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 2. Skips build if versions are unchanged.
 3. Downloads app packages with `apkeep`.
 4. Prefers supported app versions from Morphe patch compatibility.
-5. Extracts/selects a patchable APK (prefers `arm64-v8a` + `nodpi`, rejects dex-less split configs).
+5. Extracts/selects a patchable APK (prefers `arm64-v8a`, rejects dex-less split configs).
 6. Enforces signing (signed or fail).
 7. Runs `morphe-cli` and applies your patch config from `patches.json`.
 8. Publishes artifacts and rolling latest GitHub Releases per app.
@@ -58,10 +58,16 @@ Signed builds are enforced.
     "branches": {
       "morphe_patches": "main",
       "morphe_cli": "main"
+    },
+    "download_urls": {
+      "com.google.android.youtube": "",
+      "com.google.android.apps.youtube.music": "",
+      "com.reddit.frontpage": ""
     }
   }
   ```
 - Allowed values are `main` and `dev`.
+- `download_urls` is optional; when set, the workflow uses that URL as a reference/fallback package and still tries the latest Morphe-supported version first.
 - `true` = enable patch
 - `false` = disable patch
 - Workflow syncs missing upstream patch keys at runtime/start and during state update.
@@ -76,11 +82,10 @@ Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
 ## APK Selection Logic
 
-- Tries Morphe-supported versions first (derived from enabled patch compatibility).
-- If no package is downloaded from supported-version attempts, retries source default package selection.
+- Tries Morphe-supported versions first (derived from enabled patch compatibility); optional `download_urls` can provide a reference/fallback package per app.
 - Handles `.apk`, `.xapk`, `.apkm`.
 - For split packages (`.xapk/.apkm/.apks`), tries APKEditor merge first, then falls back to dex-bearing extraction if needed.
-- Prioritizes names containing `arm64-v8a` and `nodpi`.
+- Prioritizes names containing `arm64-v8a`.
 - Rejects dex-less APKs (`classes*.dex` required).
 - Reddit has an optional fallback URL (`REDDIT_FALLBACK_APK_URL`) if split output is not patchable.
 
@@ -127,9 +132,9 @@ Full setup steps are in [`SETUP.md`](SETUP.md).
 
 ## Troubleshooting
 
-### Warning: `No package downloaded from supported-version attempts`
+### Error: `No package downloaded from Morphe-supported versions`
 
-This can be normal. It means none of the compatibility-targeted version attempts returned a package and the workflow fell back to the source default selection.
+The workflow now tries Morphe-supported versions first. If all fail, it can fall back to `__morphe.download_urls` for that app (if configured). If neither works, the build fails.
 
 ### Error: `Chosen APK has no classes.dex`
 
