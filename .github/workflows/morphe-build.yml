@@ -998,7 +998,7 @@ jobs:
           VERSION_TAG="morphe-${{ matrix.name }}-${PATCHES_VERSION}-v${APK_VERSION}"
           VERSION_TITLE="Morphe ${{ matrix.name }} ${PATCHES_VERSION} (base ${APK_VERSION})"
           LATEST_TAG="morphe-${{ matrix.name }}-latest"
-          LATEST_TITLE="Morphe ${{ matrix.name }} latest (${PATCHES_VERSION}, base ${APK_VERSION})"
+          LATEST_TITLE="${LATEST_TAG} (${PATCHES_VERSION}, base ${APK_VERSION})"
           LATEST_ASSET_NAME="${{ matrix.name }}-latest.apk"
 
           if [ ! -f "$APK_FILE" ]; then
@@ -1140,15 +1140,7 @@ jobs:
              --arg sha "${{ github.sha }}" \
              --argjson run_number "${{ github.run_number }}" \
              '. as $s
-             | . + {
-               "patches_version": $patches,
-               "cli_version": $cli,
-               "patches_branch": $patches_branch,
-               "cli_branch": $cli_branch,
-               "last_build": $timestamp,
-               "status": "success"
-             }
-             | .build_history = (
+             | (
                  ((.build_history // [])
                   + [{
                       "timestamp": $timestamp,
@@ -1162,7 +1154,27 @@ jobs:
                       "commit": $sha
                   }])
                  | if length > 100 then .[-100:] else . end
-               )' state.json > state.json.tmp && mv state.json.tmp state.json
+               ) as $history
+             | {
+                 "patches_branch": $patches_branch,
+                 "patches_version": $patches,
+                 "cli_branch": $cli_branch,
+                 "cli_version": $cli
+               }
+             + ($s | del(
+                 .patches_branch,
+                 .patches_version,
+                 .cli_branch,
+                 .cli_version,
+                 .last_build,
+                 .status,
+                 .build_history
+               ))
+             + {
+                 "last_build": $timestamp,
+                 "status": "success",
+                 "build_history": $history
+               }' state.json > state.json.tmp && mv state.json.tmp state.json
 
       - name: Commit state.json and patches.json
         run: |
