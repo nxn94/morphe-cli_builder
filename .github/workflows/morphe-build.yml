@@ -189,32 +189,40 @@ jobs:
           fi
 
           npm install -g "${APKMD_NPM_SPEC}"
-
-          APKMD_PATH="$(command -v apkmd || true)"
-          if [ -z "$APKMD_PATH" ]; then
-            echo "::error::APKMirror downloader (apkmd) installation failed"
+          NPM_GLOBAL_ROOT="$(npm root -g)"
+          APKMD_PACKAGE_JSON="$NPM_GLOBAL_ROOT/apkmirror-downloader/package.json"
+          if [ ! -f "$APKMD_PACKAGE_JSON" ]; then
+            echo "::error::apkmirror-downloader package.json not found at $APKMD_PACKAGE_JSON"
             exit 1
           fi
 
-          APKMD_MODE="direct"
-          if "$APKMD_PATH" --version >/dev/null 2>&1; then
-            APKMD_MODE="direct"
-          elif node "$APKMD_PATH" --version >/dev/null 2>&1; then
-            APKMD_MODE="node"
-          else
-            echo "::error::apkmd exists but cannot be executed directly or via node"
+          APKMD_BIN_REL="$(
+            node -e '
+              const fs = require("node:fs");
+              const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              const bin = pkg.bin;
+              let rel = "";
+              if (typeof bin === "string") rel = bin;
+              else if (bin && typeof bin === "object") rel = bin.apkmd || Object.values(bin)[0] || "";
+              if (!rel) process.exit(2);
+              process.stdout.write(rel);
+            ' "$APKMD_PACKAGE_JSON"
+          )" || {
+            echo "::error::Could not resolve apkmirror-downloader bin entry from package metadata."
+            exit 1
+          }
+
+          APKMD_ENTRY="$NPM_GLOBAL_ROOT/apkmirror-downloader/${APKMD_BIN_REL#./}"
+          if [ ! -f "$APKMD_ENTRY" ]; then
+            echo "::error::Resolved apkmd entry does not exist: $APKMD_ENTRY"
             exit 1
           fi
 
-          echo "::notice::APKMirror downloader installed successfully (mode=${APKMD_MODE})"
-          if [ "$APKMD_MODE" = "node" ]; then
-            node "$APKMD_PATH" --version || true
-          else
-            "$APKMD_PATH" --version || true
-          fi
+          echo "::notice::APKMirror downloader installed successfully"
+          echo "::notice::Using Node entrypoint: $APKMD_ENTRY"
+          node "$APKMD_ENTRY" --help >/dev/null 2>&1 || true
 
-          echo "mode=$APKMD_MODE" >> "$GITHUB_OUTPUT"
-          echo "path=$APKMD_PATH" >> "$GITHUB_OUTPUT"
+          echo "entry=$APKMD_ENTRY" >> "$GITHUB_OUTPUT"
 
       - name: Prepare dirs
         run: |
@@ -426,8 +434,7 @@ jobs:
           TARGET_VERSION="${{ steps.targetver.outputs.version }}"
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
           APKEDITOR_JAR="${{ steps.morphe.outputs.apkeditor_jar }}"
-          APKMD_MODE="${{ steps.apkmd.outputs.mode }}"
-          APKMD_PATH="${{ steps.apkmd.outputs.path }}"
+          APKMD_ENTRY="${{ steps.apkmd.outputs.entry }}"
           APKMIRROR_ORG="${{ matrix.apkMirrorOrg }}"
           APKMIRROR_REPO="${{ matrix.apkMirrorRepo }}"
           
@@ -554,11 +561,11 @@ jobs:
                   }
                 ]
               }' > "$cfg"
-            if [ "$APKMD_MODE" = "node" ]; then
-              node "$APKMD_PATH" "$cfg" 2>&1 | tee -a apkmd.log
-            else
-              "$APKMD_PATH" "$cfg" 2>&1 | tee -a apkmd.log
+            if [ -z "$APKMD_ENTRY" ] || [ ! -f "$APKMD_ENTRY" ]; then
+              echo "::error::APKMirror downloader entrypoint is missing: $APKMD_ENTRY"
+              return 1
             fi
+            node "$APKMD_ENTRY" "$cfg" 2>&1 | tee -a apkmd.log
           }
 
           APK_CANDIDATE=""
