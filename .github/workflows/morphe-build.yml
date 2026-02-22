@@ -174,26 +174,24 @@ jobs:
           # Create output directory if it doesn't exist
           mkdir -p "$APKS_DIR"
           
-          # Use apkeep to download - it should save to current directory by default
-          # Check apkeep help for proper syntax
+          # Download directly into APKS_DIR.
           if apkeep -a "${{ matrix.appId }}" -d apk-pure $APKS_DIR 2>&1 | tee apkeep.log; then
             echo "::notice::apkeep completed"
           else
             echo "::warning::apkeep exited with warning but may have downloaded"
           fi
           
-          # Apkeep saves files to current directory, not to $APKS_DIR
-          # Find the downloaded APK (it saves as packagename.apk or similar)
-          if [ -f "${{ matrix.appId }}.apk" ]; then
-            mv "${{ matrix.appId }}.apk" "$APKS_DIR/"
-            APK_PATH="$APKS_DIR/${{ matrix.appId }}.apk"
+          # Prefer APKs downloaded to APKS_DIR.
+          APK_PATH="$(find "$APKS_DIR" -maxdepth 1 -type f -name "*.apk" | head -n1 || true)"
+          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
+            echo "::notice::Found APK in $APKS_DIR: $APK_PATH"
           else
-            # Try to find any APK matching the pattern in current directory
-            APK_FOUND=$(find . -maxdepth 1 -name "*${{ matrix.appId }}*.apk" -o -name "*.apk" 2>/dev/null | head -n1)
+            # Fallback: check current directory and move into APKS_DIR.
+            APK_FOUND="$(find . -maxdepth 1 -type f \( -name "*${{ matrix.appId }}*.apk" -o -name "*.apk" \) | head -n1 || true)"
             if [ -n "$APK_FOUND" ] && [ -f "$APK_FOUND" ]; then
               echo "::notice::Found APK: $APK_FOUND"
               mv "$APK_FOUND" "$APKS_DIR/"
-              APK_PATH="$(ls -1 $APKS_DIR/*.apk | head -n1)"
+              APK_PATH="$(find "$APKS_DIR" -maxdepth 1 -type f -name "*.apk" | head -n1 || true)"
             else
               echo "::error::No APK found after download"
               echo "::notice::Files in current directory:"
@@ -285,9 +283,19 @@ jobs:
           set +x
 
           # Collect output: morphe-cli places output APK in the working dir by default; move anything new to OUT_DIR
-          # We grab the newest .apk after the run.
-          OUT_APK="$(ls -1t *.apk | head -n1)"
-          [ -f "$OUT_APK" ] || OUT_APK="$(ls -1t $APKS_DIR/*.apk | head -n1)" # fallback
+          # Prefer output from current directory, then fallback to APKS_DIR.
+          OUT_APK="$(find . -maxdepth 1 -type f -name "*.apk" -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+          if [ -z "$OUT_APK" ] || [ ! -f "$OUT_APK" ]; then
+            OUT_APK="$(find "$APKS_DIR" -maxdepth 1 -type f -name "*.apk" -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+          fi
+          if [ -z "$OUT_APK" ] || [ ! -f "$OUT_APK" ]; then
+            echo "::error::Could not locate patched APK output"
+            echo "::notice::Files in current directory:"
+            ls -la
+            echo "::notice::Files in $APKS_DIR:"
+            ls -la "$APKS_DIR" || true
+            exit 1
+          fi
           
           # Rename with version info
           OUTPUT_NAME="${{ matrix.name }}-${PATCHES_VERSION}-v${APK_VERSION}.apk"
