@@ -223,17 +223,22 @@ jobs:
           )"
 
           TARGET_VERSION=""
+          TARGET_VERSIONS=""
           if [ -n "$STRICT_VERSIONS" ]; then
+            TARGET_VERSIONS="$(printf '%s\n' "$STRICT_VERSIONS" | sort -Vr | paste -sd, -)"
             TARGET_VERSION="$(printf '%s\n' "$STRICT_VERSIONS" | sort -Vr | head -n1)"
           elif [ -n "$VERSION_COUNTS" ]; then
+            TARGET_VERSIONS="$(printf '%s\n' "$VERSION_COUNTS" | sort -t $'\t' -k1,1nr -k2,2Vr | cut -f2 | paste -sd, -)"
             TARGET_VERSION="$(printf '%s\n' "$VERSION_COUNTS" | sort -t $'\t' -k1,1nr -k2,2Vr | head -n1 | cut -f2)"
           fi
 
           if [ -n "$TARGET_VERSION" ]; then
             echo "version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
+            echo "versions=$TARGET_VERSIONS" >> "$GITHUB_OUTPUT"
             echo "::notice::Selected most compatible version for ${{ matrix.appId }}: $TARGET_VERSION"
           else
             echo "version=" >> "$GITHUB_OUTPUT"
+            echo "versions=" >> "$GITHUB_OUTPUT"
             echo "::warning::Could not resolve a supported version from patches list; falling back to latest available download."
           fi
 
@@ -244,33 +249,60 @@ jobs:
           
           echo "::notice::Downloading APK for ${{ matrix.appId }}..."
           TARGET_VERSION="${{ steps.targetver.outputs.version }}"
+          TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
           
           # Create output directory if it doesn't exist
           mkdir -p "$APKS_DIR"
+          rm -f "$APKS_DIR"/* || true
+          : > apkeep.log
           
-          # Download the most compatible version first, then fall back to latest if unavailable.
-          APKEEP_ARGS=(-a "${{ matrix.appId }}" -d apk-pure "$APKS_DIR")
-          if [ -n "$TARGET_VERSION" ]; then
-            APKEEP_ARGS+=(--version "$TARGET_VERSION")
+          find_package_candidate() {
+            find "$APKS_DIR" -type f \
+              \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" \) \
+              -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true
+          }
+
+          download_with_apkeep() {
+            local version="$1"
+            local -a args=(-a "${{ matrix.appId }}" -d apk-pure "$APKS_DIR")
+            if [ -n "$version" ]; then
+              args+=(--version "$version")
+            fi
+            apkeep "${args[@]}" 2>&1 | tee -a apkeep.log
+          }
+
+          APK_CANDIDATE=""
+          RESOLVED_DOWNLOAD_VERSION=""
+
+          if [ -n "$TARGET_VERSIONS" ]; then
+            IFS=',' read -r -a VERSION_LIST <<< "$TARGET_VERSIONS"
+            for v in "${VERSION_LIST[@]}"; do
+              [ -z "$v" ] && continue
+              echo "::notice::Trying supported version $v for ${{ matrix.appId }}..."
+              if download_with_apkeep "$v"; then
+                echo "::notice::apkeep completed for version $v"
+              else
+                echo "::warning::apkeep failed for version $v"
+              fi
+
+              APK_CANDIDATE="$(find_package_candidate)"
+              if [ -n "$APK_CANDIDATE" ] && [ -f "$APK_CANDIDATE" ]; then
+                RESOLVED_DOWNLOAD_VERSION="$v"
+                break
+              fi
+            done
           fi
 
-          if apkeep "${APKEEP_ARGS[@]}" 2>&1 | tee apkeep.log; then
-            echo "::notice::apkeep completed"
-          else
-            if [ -n "$TARGET_VERSION" ]; then
-              echo "::warning::Failed to download supported version $TARGET_VERSION, retrying latest available package."
-              if apkeep -a "${{ matrix.appId }}" -d apk-pure "$APKS_DIR" 2>&1 | tee -a apkeep.log; then
-                echo "::notice::apkeep fallback download completed"
-              else
-                echo "::warning::apkeep exited with warning but may have downloaded"
-              fi
+          if [ -z "$APK_CANDIDATE" ]; then
+            echo "::warning::No package downloaded from supported versions. Retrying latest available package."
+            if download_with_apkeep ""; then
+              echo "::notice::apkeep completed for latest available package"
             else
-              echo "::warning::apkeep exited with warning but may have downloaded"
+              echo "::warning::apkeep failed for latest available package"
             fi
+            APK_CANDIDATE="$(find_package_candidate)"
           fi
-          
-          # Prefer APK/XAPK files downloaded to APKS_DIR.
-          APK_CANDIDATE="$(find "$APKS_DIR" -maxdepth 1 -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" \) -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+
           if [ -n "$APK_CANDIDATE" ] && [ -f "$APK_CANDIDATE" ]; then
             echo "::notice::Found package in $APKS_DIR: $APK_CANDIDATE"
           else
@@ -286,6 +318,8 @@ jobs:
               ls -la
               echo "::notice::Files in $APKS_DIR:"
               ls -la "$APKS_DIR" || true
+              echo "::notice::apkeep log:"
+              cat apkeep.log || true
               exit 1
             fi
           fi
@@ -329,6 +363,9 @@ jobs:
           # Extract version from APK filename
           APK_FILENAME=$(basename "$APK_PATH")
           APK_VERSION=$(echo "$APK_FILENAME" | grep -oE '[0-9]+(\.[0-9]+){2,}' | head -1 || true)
+          if [ -z "$APK_VERSION" ] && [ -n "$RESOLVED_DOWNLOAD_VERSION" ]; then
+            APK_VERSION="$RESOLVED_DOWNLOAD_VERSION"
+          fi
           if [ -z "$APK_VERSION" ] && [ -n "$TARGET_VERSION" ]; then
             APK_VERSION="$TARGET_VERSION"
           fi
