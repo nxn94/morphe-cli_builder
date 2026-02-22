@@ -5,9 +5,9 @@
       "morphe_cli": "main"
     },
     "download_urls": {
-      "com.google.android.youtube": "https://www.apkmirror.com/apk/google-inc/youtube/youtube-20-40-45-release/youtube-20-40-45-2-android-apk-download/",
-      "com.google.android.apps.youtube.music": "https://www.apkmirror.com/apk/google-inc/youtube-music/youtube-music-8-40-54-release/youtube-music-8-40-54-3-android-apk-download/",
-      "com.reddit.frontpage": "https://www.apkmirror.com/apk/redditinc/reddit/reddit-2026-04-0-release/reddit-2026-04-0-2-android-apk-download/"
+      "com.google.android.youtube": "https://www.apkmirror.com/apk/google-inc/youtube/youtube-20-40-45-release/youtube-20-40-45-2-android-apk-download/download/?key=522664e5d4d30a597025604b7058eb71411eab61&forcebaseapk=true",
+      "com.google.android.apps.youtube.music": "https://www.apkmirror.com/apk/google-inc/youtube-music/youtube-music-8-40-54-release/youtube-music-8-40-54-3-android-apk-download/download/?key=71388b87a8fd08d4231d24aa85fbbbd8b363d67b&forcebaseapk=true",
+      "com.reddit.frontpage": "https://www.apkmirror.com/apk/redditinc/reddit/reddit-2026-04-0-release/reddit-2026-04-0-2-android-apk-download/download/?key=a149ba7d1596c25e3c440dea57485fbb4fc2ac7c"
     }
   },
   "com.google.android.youtube": {
