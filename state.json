@@ -1,7 +1,7 @@
 {
-  "patches_version": "v1.14.0",
-  "cli_version": "v1.4.0",
-  "last_build": "2026-02-22T14:19:40Z",
-  "status": "success",
+  "patches_version": "none",
+  "cli_version": "none",
+  "last_build": null,
+  "status": "not-started",
   "build_history": []
 }
