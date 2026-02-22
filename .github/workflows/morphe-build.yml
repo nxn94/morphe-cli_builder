@@ -642,6 +642,41 @@ jobs:
           name: morphe-${{ matrix.name }}-${{ env.PATCHES_VERSION }}-v${{ steps.getapk.outputs.version }}
           path: out/${{ steps.patch.outputs.output }}
 
+      - name: Publish release for ${{ matrix.name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          APK_FILE="out/${{ steps.patch.outputs.output }}"
+          APK_VERSION="${{ steps.getapk.outputs.version }}"
+          APP_TAG="morphe-${{ matrix.name }}-${PATCHES_VERSION}-v${APK_VERSION}"
+          APP_TITLE="Morphe ${{ matrix.name }} ${PATCHES_VERSION} (base ${APK_VERSION})"
+
+          if [ ! -f "$APK_FILE" ]; then
+            echo "::error::APK file not found for release: $APK_FILE"
+            exit 1
+          fi
+
+          RELEASE_NOTES="$(cat <<EOF
+          Patched app: ${{ matrix.appId }}
+          Base app version: ${APK_VERSION}
+          Patches version: ${PATCHES_VERSION}
+          CLI version: ${CLI_VERSION}
+          EOF
+          )"
+
+          if gh release view "$APP_TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $APP_TAG already exists; updating asset and notes."
+            gh release upload "$APP_TAG" "$APK_FILE" --clobber
+            gh release edit "$APP_TAG" --title "$APP_TITLE" --notes "$RELEASE_NOTES"
+          else
+            echo "::notice::Creating release $APP_TAG"
+            gh release create "$APP_TAG" "$APK_FILE" \
+              --title "$APP_TITLE" \
+              --notes "$RELEASE_NOTES"
+          fi
+
   update-state:
     needs: [check-versions, build]
     if: needs.build.result == 'success' && needs.check-versions.outputs.should-build == 'true'
