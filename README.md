@@ -12,7 +12,7 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 
 1. Checks latest Morphe patch/CLI release tags.
 2. Skips build if versions are unchanged.
-3. Downloads app packages from APKMirror with `apkmirror-downloader` (`apkmd`).
+3. Downloads app packages from APKMirror with either manual URL overrides from `patches.json` or `apkmirror-downloader` (`apkmd`).
 4. Prefers supported app versions from Morphe patch compatibility.
 5. Extracts/selects a patchable APK (prefers `arm64-v8a`, rejects dex-less split configs).
 6. Enforces signing (signed or fail).
@@ -62,6 +62,20 @@ Signed builds are enforced.
   }
   ```
 - Allowed values are `main` and `dev`.
+- Optional manual APK source override (used before `apkmd`):
+  ```json
+  "__morphe": {
+    "download_urls": {
+      "com.google.android.youtube": {
+        "20.40.45": "https://www.apkmirror.com/apk/.../android-apk-download/",
+        "latest_supported": "https://www.apkmirror.com/apk/.../android-apk-download/"
+      }
+    }
+  }
+  ```
+- Resolution order for manual URL:
+  1. `__morphe.download_urls.<appId>.<target_version>`
+  2. `__morphe.download_urls.<appId>.latest_supported`
 - `true` = enable patch
 - `false` = disable patch
 - Workflow syncs missing upstream patch keys at runtime/start and during state update.
@@ -124,9 +138,11 @@ Full setup steps are in [`SETUP.md`](SETUP.md).
 
 ## Troubleshooting
 
-### Error: `No package downloaded from Morphe-supported versions`
+### Error: `No package downloaded for latest Morphe-supported version`
 
 The workflow downloads only the latest Morphe-supported version. If that version is not downloadable, the build fails (no fallback to older supported versions).
+
+If APKMirror blocks scraper traffic with `This page cannot be loaded without JavaScript and cookies enabled`, set a manual URL in `patches.json` under `__morphe.download_urls` for that app/version.
 
 ### Error: `Chosen APK has no classes.dex`
 

@@ -54,6 +54,7 @@ Workflow behavior:
 - Missing upstream patches are auto-added.
 - Existing true/false edits are preserved.
 - Build logs show enabled and disabled patch lists per app.
+- Optional: define manual APKMirror URLs in `__morphe.download_urls` (per app/per version or `latest_supported`) to bypass downloader scraping failures.
 
 ## 5. Run The Workflow
 
@@ -95,6 +96,7 @@ Workflow prefers patchable `arm64-v8a` APKs and rejects split config APKs withou
 For `.xapk/.apkm/.apks`, it attempts APKEditor merge to produce a normal APK before fallback extraction.
 
 The workflow tries only the latest Morphe-supported version per app. If that exact version cannot be downloaded, the build fails.
+If APKMirror anti-bot blocks automated scraping, set manual URLs in `patches.json` under `__morphe.download_urls`.
 
 ## Common Failures
 

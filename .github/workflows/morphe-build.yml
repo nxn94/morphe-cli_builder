@@ -93,12 +93,15 @@ jobs:
           echo "cli-branch=$CLI_BRANCH" >> "$GITHUB_OUTPUT"
 
           # Load previous state
-          if [ -f state.json ]; then
+          if [ -f state.json ] && jq empty state.json >/dev/null 2>&1; then
             PREV_PATCHES=$(jq -r '.patches_version // "none"' state.json)
             PREV_CLI=$(jq -r '.cli_version // "none"' state.json)
             PREV_PATCHES_BRANCH=$(jq -r '.patches_branch // "main"' state.json)
             PREV_CLI_BRANCH=$(jq -r '.cli_branch // "main"' state.json)
           else
+            if [ -f state.json ]; then
+              echo "::warning::state.json is missing or invalid JSON; using default previous state."
+            fi
             PREV_PATCHES="none"
             PREV_CLI="none"
             PREV_PATCHES_BRANCH="main"
@@ -442,6 +445,27 @@ jobs:
           mkdir -p "$APKS_DIR"
           rm -f "$APKS_DIR"/* || true
           : > apkmd.log
+
+          # Optional manual source URL override (per app/per version) to bypass scraper issues.
+          # patches.json shape:
+          # "__morphe": {
+          #   "download_urls": {
+          #     "com.google.android.youtube": {
+          #       "20.40.45": "https://www.apkmirror.com/apk/.../android-apk-download/",
+          #       "latest_supported": "https://www.apkmirror.com/apk/.../android-apk-download/"
+          #     }
+          #   }
+          # }
+          MANUAL_URL="$(
+            jq -r \
+              --arg pkg "$APP_ID" \
+              --arg ver "$TARGET_VERSION" \
+              '
+                .["__morphe"]?.download_urls?[$pkg]?[$ver]
+                // .["__morphe"]?.download_urls?[$pkg]?["latest_supported"]
+                // empty
+              ' patches.json 2>/dev/null || true
+          )"
           
           find_package_candidate() {
             find "$APKS_DIR" -type f \
@@ -543,6 +567,7 @@ jobs:
           download_with_apkmd() {
             local version="$1"
             local cfg="$RUNNER_TEMP/apkmd_${{ matrix.name }}_${version//[^0-9A-Za-z._-]/_}.json"
+            local runlog="$RUNNER_TEMP/apkmd_run_${{ matrix.name }}_${version//[^0-9A-Za-z._-]/_}.log"
             jq -n \
               --arg out "$APKS_DIR" \
               --arg org "$APKMIRROR_ORG" \
@@ -565,7 +590,103 @@ jobs:
               echo "::error::APKMirror downloader entrypoint is missing: $APKMD_ENTRY"
               return 1
             fi
-            node "$APKMD_ENTRY" "$cfg" 2>&1 | tee -a apkmd.log
+            if ! node "$APKMD_ENTRY" "$cfg" 2>&1 | tee "$runlog" | tee -a apkmd.log; then
+              return 1
+            fi
+
+            # apkmd may exit 0 even when download failed; detect known failure text.
+            if grep -Eqi \
+              'Unable to download|cannot be loaded without JavaScript and cookies enabled|No package downloaded|error:' \
+              "$runlog"; then
+              return 1
+            fi
+            return 0
+          }
+
+          download_with_manual_url() {
+            local url="$1"
+            local ua='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36'
+            local page="$RUNNER_TEMP/apkmirror_page_${{ matrix.name }}.html"
+            local headers="$RUNNER_TEMP/apkmirror_headers_${{ matrix.name }}.txt"
+            local direct_url="$url"
+            local out_file="$RUNNER_TEMP/manual_${{ matrix.name }}"
+            local final_name=""
+            local ext=""
+
+            if [ -z "$url" ]; then
+              return 1
+            fi
+
+            echo "::notice::Using manual APK source URL for ${APP_ID}: $url"
+
+            # If this is a release page, resolve the first direct APKMirror download link.
+            if ! printf '%s' "$direct_url" | grep -Eqi '(download\.php\?|\.apk($|[?])|\.xapk($|[?])|\.apkm($|[?])|\.apks($|[?]))'; then
+              if ! curl -fL -A "$ua" "$direct_url" -o "$page"; then
+                echo "::warning::Could not fetch manual source page: $direct_url"
+                return 1
+              fi
+              if grep -qi 'cannot be loaded without JavaScript and cookies enabled' "$page"; then
+                echo "::warning::Manual source page is blocked by APKMirror anti-bot challenge."
+                return 1
+              fi
+
+              direct_url="$( \
+                grep -Eo 'https://www\.apkmirror\.com/wp-content/themes/APKMirror/download\.php\?id=[^"[:space:]]+' "$page" | head -n1 \
+                  || true
+              )"
+              if [ -z "$direct_url" ]; then
+                direct_url="$( \
+                  grep -Eo '/wp-content/themes/APKMirror/download\.php\?id=[^"[:space:]]+' "$page" | head -n1 \
+                    || true
+                )"
+                if [ -n "$direct_url" ]; then
+                  direct_url="https://www.apkmirror.com${direct_url}"
+                fi
+              fi
+              if [ -z "$direct_url" ]; then
+                echo "::warning::Could not resolve direct download URL from manual page."
+                return 1
+              fi
+            fi
+
+            if ! curl -fL -A "$ua" -D "$headers" "$direct_url" -o "$out_file"; then
+              echo "::warning::Manual download failed from: $direct_url"
+              return 1
+            fi
+
+            if file -b --mime-type "$out_file" | grep -q '^text/'; then
+              echo "::warning::Manual download returned text/html instead of APK file."
+              return 1
+            fi
+
+            final_name="$(
+              awk 'BEGIN{IGNORECASE=1}
+                   /^content-disposition:/{
+                     if (match($0, /filename="?[^\";]+"?/)) {
+                       name=substr($0, RSTART, RLENGTH)
+                       sub(/^filename="?/, "", name)
+                       sub(/"?$/, "", name)
+                       print name
+                     }
+                   }' "$headers" | tail -n1
+            )"
+
+            if [ -z "$final_name" ]; then
+              final_name="$(basename "${direct_url%%\?*}")"
+            fi
+            if [ -z "$final_name" ] || [ "$final_name" = "/" ]; then
+              final_name="${APP_ID}.apk"
+            fi
+
+            ext="${final_name##*.}"
+            case "${ext,,}" in
+              apk|xapk|apkm|apks) ;;
+              *) final_name="${APP_ID}.apk" ;;
+            esac
+
+            mv -f "$out_file" "$APKS_DIR/$final_name"
+            echo "::notice::Manual download saved: $APKS_DIR/$final_name"
+            return 0
           }
 
           APK_CANDIDATE=""
@@ -575,11 +696,25 @@ jobs:
             exit 1
           fi
 
-          echo "::notice::Trying latest Morphe-supported version $TARGET_VERSION for ${{ matrix.appId }}..."
-          if download_with_apkmd "$TARGET_VERSION"; then
-            echo "::notice::apkmd completed for version $TARGET_VERSION"
-          else
-            echo "::warning::apkmd failed for version $TARGET_VERSION"
+          DOWNLOAD_DONE=false
+          if [ -n "$MANUAL_URL" ]; then
+            echo "::notice::Trying manual source URL for latest Morphe-supported version $TARGET_VERSION..."
+            if download_with_manual_url "$MANUAL_URL"; then
+              echo "::notice::Manual source download completed for version $TARGET_VERSION"
+              DOWNLOAD_DONE=true
+            else
+              echo "::warning::Manual source download failed for version $TARGET_VERSION; retrying with apkmd."
+            fi
+          fi
+
+          if [ "$DOWNLOAD_DONE" != true ]; then
+            echo "::notice::Trying latest Morphe-supported version $TARGET_VERSION for ${{ matrix.appId }}..."
+            if download_with_apkmd "$TARGET_VERSION"; then
+              echo "::notice::apkmd completed for version $TARGET_VERSION"
+              DOWNLOAD_DONE=true
+            else
+              echo "::warning::apkmd failed for version $TARGET_VERSION"
+            fi
           fi
 
           APK_CANDIDATE="$(find_package_candidate)"
@@ -1153,6 +1288,12 @@ jobs:
                 )
               )
           ' > patches.json.tmp && mv patches.json.tmp patches.json
+
+          # Ensure state file is valid JSON before merge/update.
+          if [ ! -f state.json ] || ! jq empty state.json >/dev/null 2>&1; then
+            echo "::warning::state.json is missing or invalid JSON; recreating with defaults."
+            echo '{}' > state.json
+          fi
 
           # Update state and append build history.
           jq --arg patches "${{ needs.check-versions.outputs.patches-version }}" \
