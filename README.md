@@ -137,6 +137,21 @@ The workflow produces:
 2. Scroll to "Artifacts" section
 3. Download the desired patched APK
 
+## Use with Obtainium
+
+You can track all 3 apps from the same GitHub repository in Obtainium. You do **not** need separate repositories.
+
+For each app, create a separate Obtainium entry:
+
+1. Source: **GitHub**
+2. Repository URL: `https://github.com/<your-user>/<your-repo>`
+3. Release tag (exact):
+   - YouTube: `morphe-youtube-latest`
+   - YouTube Music: `morphe-ytmusic-latest`
+   - Reddit: `morphe-reddit-latest`
+
+The workflow also creates versioned historical tags (`morphe-<app>-<patches-version>-v<apk-version>`), but Obtainium should follow the stable `-latest` tags above.
+
 ## State File
 
 `state.json` tracks:

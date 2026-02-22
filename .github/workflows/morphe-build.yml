@@ -74,6 +74,7 @@ jobs:
       TOOLS_DIR: tools
       APKS_DIR: apps
       OUT_DIR: out
+      APKEEP_CACHE_VERSION: "1"
       PATCHES_VERSION: ${{ needs.check-versions.outputs.patches-version }}
       CLI_VERSION: ${{ needs.check-versions.outputs.cli-version }}
 
@@ -87,22 +88,46 @@ jobs:
           distribution: temurin
           java-version: "17" # any current LTS JRE is fine to run the CLI [9](https://aur.archlinux.org/packages/morphe-cli)
 
-      - name: Install jq & apkeep
+      - name: Restore Rust/apkeep cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+          key: ${{ runner.os }}-apkeep-${{ env.APKEEP_CACHE_VERSION }}
+
+      - name: Install jq & apkeep (cached)
         run: |
           set -euo pipefail
           
           echo "::notice::Installing dependencies..."
           sudo apt-get update -y
           sudo apt-get install -y jq curl unzip libbcprov-java
-          
-          # Install Rust (needed for apkeep)
-          echo "::notice::Installing Rust toolchain..."
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          source "$HOME/.cargo/env"
-          
-          # Install apkeep from source (most reliable method)
-          echo "::notice::Building and installing apkeep from source..."
-          cargo install apkeep --locked --quiet
+
+          # Ensure Cargo bin path is available for current and subsequent steps.
+          export PATH="$HOME/.cargo/bin:$PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+          # Install Rust only when missing.
+          if ! command -v cargo &> /dev/null; then
+            echo "::notice::Installing Rust toolchain..."
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          fi
+          if [ -f "$HOME/.cargo/env" ]; then
+            source "$HOME/.cargo/env"
+          fi
+
+          # Build apkeep only when cache does not already provide it.
+          if command -v apkeep &> /dev/null; then
+            echo "::notice::Using cached apkeep binary"
+          else
+            echo "::notice::Building and installing apkeep from source..."
+            cargo install apkeep --locked --quiet
+          fi
           
           # Verify installation
           if ! command -v apkeep &> /dev/null; then
@@ -145,27 +170,63 @@ jobs:
             --pattern 'morphe-cli-*-all.jar' \
             --dir "$TOOLS_DIR" >/dev/null
 
-      - name: Ensure patches.json exists (generate defaults if missing)
+      - name: Sync patches.json with latest patches (preserve edits)
         run: |
           set -euo pipefail
-          if [ ! -f patches.json ]; then
-            echo "::notice::No patches.json found; generating with all patches enabled by default."
 
-            # Some releases expose an array "patches", some a flat list; handle both.
-            jq -n --slurpfile plist "$TOOLS_DIR/patches-list.json" '
-              def base($pkg):
-                ($plist[0].patches // $plist[0]) # handle { "patches": [...] } or just [...]
-                | map(select( (.compatiblePackages // .compatible_packages)
-                               | any(.name == $pkg or .packageName == $pkg) ))
-                | map({ (.name): true }) | add;
+          DEFAULTS_FILE="$RUNNER_TEMP/default_patches.json"
+          EXISTING_FILE="$RUNNER_TEMP/existing_patches.json"
+          PKGS='["com.google.android.youtube","com.google.android.apps.youtube.music","com.reddit.frontpage"]'
 
-              {
-                "com.google.android.youtube": base("com.google.android.youtube"),
-                "com.google.android.apps.youtube.music": base("com.google.android.apps.youtube.music"),
-                "com.reddit.frontpage": base("com.reddit.frontpage")
-              }' > patches.json
+          # Build defaults for all known apps from the latest patches list.
+          jq --argjson pkgs "$PKGS" '
+            def patch_list: (.patches // .);
+            def is_compatible($patch; $pkg):
+              if ($patch.compatiblePackages? | type) == "object" then
+                (($patch.compatiblePackages[$pkg]? | type) == "array")
+              elif ($patch.compatible_packages? | type) == "object" then
+                (($patch.compatible_packages[$pkg]? | type) == "array")
+              else
+                (($patch.compatiblePackages // $patch.compatible_packages // [])
+                  | if type == "array" then any((.name // .packageName // "") == $pkg) else false end)
+              end;
+
+            reduce $pkgs[] as $pkg ({};
+              .[$pkg] = (
+                (patch_list
+                  | map(select(is_compatible(.; $pkg)))
+                  | map({(.name): true})
+                  | add
+                ) // {}
+              )
+            )
+          ' "$TOOLS_DIR/patches-list.json" > "$DEFAULTS_FILE"
+
+          # Load existing user config if valid JSON, otherwise start fresh.
+          if [ -f patches.json ] && jq empty patches.json >/dev/null 2>&1; then
+            cp patches.json "$EXISTING_FILE"
+          else
+            if [ -f patches.json ]; then
+              echo "::warning::Existing patches.json is invalid JSON; regenerating from defaults."
+            fi
+            echo '{}' > "$EXISTING_FILE"
           fi
-          echo "Generated/using patches.json:"
+
+          # Merge defaults with existing file, preserving user-edited values.
+          jq -n --slurpfile defaults "$DEFAULTS_FILE" --slurpfile existing "$EXISTING_FILE" '
+            ($defaults[0] // {}) as $d
+            | ($existing[0] // {}) as $e
+            | ($e | if type == "object" then . else {} end) as $base
+            | reduce ($d | keys[]) as $pkg ($base;
+                .[$pkg] = (
+                  ($d[$pkg] // {})
+                  * ((.[$pkg] // {}) | if type == "object" then . else {} end)
+                )
+              )
+          ' > patches.json.tmp
+          mv patches.json.tmp patches.json
+
+          echo "::notice::Synced patches.json with latest available patches while preserving existing edits."
           jq 'keys' patches.json
 
       - name: Resolve supported version for ${{ matrix.appId }}
@@ -259,7 +320,31 @@ jobs:
           find_package_candidate() {
             find "$APKS_DIR" -type f \
               \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" \) \
-              -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true
+              -printf '%p\n' \
+              | awk '
+                  function lower(s){ return tolower(s) }
+                  function score(path, n, ext, s) {
+                    n = lower(path)
+                    ext = n
+                    sub(/^.*\./, "", ext)
+                    s = 0
+                    if (ext == "apk") s += 2000
+                    else if (ext == "xapk" || ext == "apkm") s += 500
+                    if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
+                    if (n ~ /nodpi/) s += 400
+                    if (n ~ /x86_64|x86/) s -= 600
+                    if (n ~ /armeabi-v7a|arm-v7a|v7a/) s -= 300
+                    return s
+                  }
+                  {
+                    s = score($0)
+                    if (best == "" || s > bests) {
+                      best = $0
+                      bests = s
+                    }
+                  }
+                  END { if (best != "") print best }
+                ' || true
           }
 
           download_with_apkeep() {
@@ -294,7 +379,7 @@ jobs:
           fi
 
           if [ -z "$APK_CANDIDATE" ]; then
-            echo "::warning::No package downloaded from supported versions. Retrying latest available package."
+            echo "::notice::No package downloaded from supported-version attempts. Retrying source default package selection."
             if download_with_apkeep ""; then
               echo "::notice::apkeep completed for latest available package"
             else
@@ -334,9 +419,36 @@ jobs:
               mkdir -p "$XAPK_TMP"
               unzip -o -q "$APK_CANDIDATE" '*.apk' -d "$XAPK_TMP" || true
 
-              EXTRACTED_APK="$(find "$XAPK_TMP" -type f -name "base.apk" | head -n1 || true)"
+              # Prefer arm64-v8a + nodpi APK names. Avoid split config files when possible.
+              EXTRACTED_APK="$(
+                find "$XAPK_TMP" -type f -name "*.apk" -printf '%p\n' \
+                  | awk '
+                      function lower(s){ return tolower(s) }
+                      function score(path, n, b, s) {
+                        n = lower(path)
+                        b = n
+                        sub(/^.*\//, "", b)
+                        s = 0
+                        if (b == "base.apk") s += 500
+                        if (n ~ /arm64-v8a|arm64_v8a|arm64/) s += 800
+                        if (n ~ /nodpi/) s += 400
+                        if (n ~ /x86_64|x86/) s -= 600
+                        if (n ~ /armeabi-v7a|arm-v7a|v7a/) s -= 300
+                        if (n ~ /split_config/) s -= 1200
+                        return s
+                      }
+                      {
+                        s = score($0)
+                        if (best == "" || s > bests) {
+                          best = $0
+                          bests = s
+                        }
+                      }
+                      END { if (best != "") print best }
+                    '
+              )"
               if [ -z "$EXTRACTED_APK" ]; then
-                # Fallback: choose the largest APK from the archive.
+                # Last fallback: largest APK in archive.
                 EXTRACTED_APK="$(find "$XAPK_TMP" -type f -name "*.apk" -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
               fi
 
@@ -349,7 +461,7 @@ jobs:
 
               APK_PATH="$APKS_DIR/${{ matrix.appId }}.apk"
               cp "$EXTRACTED_APK" "$APK_PATH"
-              echo "::notice::Extracted APK: $APK_PATH"
+              echo "::notice::Extracted APK: $APK_PATH (from $(basename "$EXTRACTED_APK"))"
               ;;
           esac
           
