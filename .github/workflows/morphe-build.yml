@@ -259,7 +259,7 @@ jobs:
 
   update-state:
     needs: [check-versions, build]
-    if: always() && needs.check-versions.outputs.should-build == 'true'
+    if: needs.build.result == 'success' && needs.check-versions.outputs.should-build == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -2,6 +2,6 @@
   "patches_version": "v1.14.0",
   "cli_version": "v1.4.0",
   "last_build": "2026-02-22T00:51:22Z",
-  "status": "success",
+  "status": "failed",
   "build_history": []
 }
