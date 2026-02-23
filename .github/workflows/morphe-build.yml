@@ -1,4 +1,4 @@
-name: Build Morphe‑patched apps
+name: Build Morphe-patched apps
 
 on:
   workflow_dispatch:
@@ -600,7 +600,6 @@ jobs:
           }
 
           APK_CANDIDATE=""
-          RESOLVED_DOWNLOAD_VERSION=""
           if [ -z "$TARGET_VERSION" ]; then
             echo "::error::No latest Morphe-supported version was resolved for ${{ matrix.appId }}."
             exit 1
@@ -621,9 +620,6 @@ jobs:
           fi
 
           APK_CANDIDATE="$(find_package_candidate)"
-          if [ -n "$APK_CANDIDATE" ] && [ -f "$APK_CANDIDATE" ]; then
-            RESOLVED_DOWNLOAD_VERSION="$TARGET_VERSION"
-          fi
 
           if [ -z "$APK_CANDIDATE" ]; then
             echo "::error::No package downloaded for latest Morphe-supported version $TARGET_VERSION for ${{ matrix.appId }}."
@@ -631,24 +627,13 @@ jobs:
             exit 1
           fi
 
-          if [ -n "$APK_CANDIDATE" ] && [ -f "$APK_CANDIDATE" ]; then
-            echo "::notice::Found package in $APKS_DIR: $APK_CANDIDATE"
-          else
-            # Fallback: check current directory and move into APKS_DIR.
-            APK_FOUND="$(find . -maxdepth 1 -type f \( -name "*${{ matrix.appId }}*.apk" -o -name "*${{ matrix.appId }}*.xapk" -o -name "*${{ matrix.appId }}*.apkm" -o -name "*${{ matrix.appId }}*.apks" -o -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1 || true)"
-            if [ -n "$APK_FOUND" ] && [ -f "$APK_FOUND" ]; then
-              echo "::notice::Found package in current dir: $APK_FOUND"
-              mv "$APK_FOUND" "$APKS_DIR/"
-              APK_CANDIDATE="$APKS_DIR/$(basename "$APK_FOUND")"
-            else
-              echo "::error::No APK found after download"
-              echo "::notice::Files in current directory:"
-              ls -la
-              echo "::notice::Files in $APKS_DIR:"
-              ls -la "$APKS_DIR" || true
-              exit 1
-            fi
+          if [ ! -f "$APK_CANDIDATE" ]; then
+            echo "::error::Resolved package path is missing: $APK_CANDIDATE"
+            echo "::notice::Files in $APKS_DIR:"
+            ls -la "$APKS_DIR" || true
+            exit 1
           fi
+          echo "::notice::Found package in $APKS_DIR: $APK_CANDIDATE"
 
           # If an APK was selected directly, ensure it contains dex classes and is not a split-only config APK.
           if [[ "$APK_CANDIDATE" == *.apk ]] && ! apk_has_dex "$APK_CANDIDATE"; then
@@ -738,9 +723,6 @@ jobs:
           # Extract version from APK filename
           APK_FILENAME=$(basename "$APK_PATH")
           APK_VERSION=$(echo "$APK_FILENAME" | grep -oE '[0-9]+(\.[0-9]+){2,}' | head -1 || true)
-          if [ -z "$APK_VERSION" ] && [ -n "$RESOLVED_DOWNLOAD_VERSION" ]; then
-            APK_VERSION="$RESOLVED_DOWNLOAD_VERSION"
-          fi
           if [ -z "$APK_VERSION" ] && [ -n "$TARGET_VERSION" ]; then
             APK_VERSION="$TARGET_VERSION"
           fi
@@ -1031,7 +1013,7 @@ jobs:
       - name: Upload patched ${{ matrix.name }}
         uses: actions/upload-artifact@v4
         with:
-          name: morphe-${{ matrix.name }}-${{ env.PATCHES_VERSION }}-v${{ steps.getapk.outputs.version }}
+          name: ${{ matrix.name }}-${{ env.PATCHES_VERSION }}-v${{ steps.getapk.outputs.version }}
           path: out/${{ steps.patch.outputs.output }}
 
       - name: Publish release for ${{ matrix.name }}
@@ -1042,17 +1024,17 @@ jobs:
 
           APK_FILE="out/${{ steps.patch.outputs.output }}"
           APK_VERSION="${{ steps.getapk.outputs.version }}"
-          LATEST_TAG="morphe-${{ matrix.name }}-latest"
-          LATEST_TITLE="${LATEST_TAG} (${PATCHES_VERSION}, base ${APK_VERSION})"
-          LATEST_ASSET_NAME="${{ matrix.name }}-latest.apk"
+          RELEASE_TAG="${{ matrix.name }}"
+          RELEASE_TITLE="${{ matrix.name }} (${PATCHES_VERSION}, base ${APK_VERSION})"
+          RELEASE_ASSET_NAME="${{ matrix.name }}.apk"
 
           if [ ! -f "$APK_FILE" ]; then
             echo "::error::APK file not found for release: $APK_FILE"
             exit 1
           fi
 
-          RELEASE_NOTES_LATEST="$(cat <<EOF
-          Rolling latest release for ${{ matrix.appId }}.
+          RELEASE_NOTES="$(cat <<EOF
+          Rolling release for ${{ matrix.appId }}.
           Current base app version: ${APK_VERSION}
           Current patches channel: ${PATCHES_BRANCH}
           Current patches version: ${PATCHES_VERSION}
@@ -1080,7 +1062,7 @@ jobs:
 
           cleanup_old_versioned_releases() {
             local app_name="${{ matrix.name }}"
-            local keep_tag="$LATEST_TAG"
+            local keep_tag="$RELEASE_TAG"
             local -a old_tags=()
 
             mapfile -t old_tags < <(
@@ -1089,7 +1071,11 @@ jobs:
                 | .tag_name
               ' \
               | awk -v app="$app_name" -v keep="$keep_tag" '
-                  $0 ~ ("^morphe-" app "-") && $0 != keep { print $0 }
+                  $0 != keep && (
+                    $0 ~ ("^morphe-" app "(-|$)")
+                    || $0 ~ ("^" app "-latest$")
+                    || $0 ~ ("^" app "-v")
+                  ) { print $0 }
                 ' \
               || true
             )
@@ -1108,14 +1094,14 @@ jobs:
 
           # Stable tag for Obtainium (no regex needed), asset name is fixed and overwritten.
           publish_release \
-            "$LATEST_TAG" \
-            "$LATEST_TITLE" \
-            "$RELEASE_NOTES_LATEST" \
-            "$APK_FILE#${LATEST_ASSET_NAME}"
+            "$RELEASE_TAG" \
+            "$RELEASE_TITLE" \
+            "$RELEASE_NOTES" \
+            "$APK_FILE#${RELEASE_ASSET_NAME}"
 
-          # Keep only the rolling latest release for this app.
+          # Keep only the rolling release for this app.
           cleanup_old_versioned_releases
-          echo "::notice::Published tag: ${LATEST_TAG}"
+          echo "::notice::Published tag: ${RELEASE_TAG}"
 
   update-state:
     needs: [check-versions, build]

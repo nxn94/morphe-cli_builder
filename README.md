@@ -17,7 +17,7 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 5. Extracts/selects a patchable APK (prefers `arm64-v8a`, rejects dex-less split configs).
 6. Enforces signing (signed or fail).
 7. Runs `morphe-cli` and applies your patch config from `patches.json`.
-8. Publishes artifacts and rolling latest GitHub Releases per app.
+8. Publishes artifacts and rolling GitHub Releases per app.
 9. Updates `state.json` and keeps `patches.json` synced with upstream patch list (without overriding your existing true/false edits).
 
 ## Release And Obtainium Model
@@ -25,9 +25,9 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 Each app gets:
 
 - A stable tag for Obtainium:
-  - `morphe-youtube-latest`
-  - `morphe-ytmusic-latest`
-  - `morphe-reddit-latest`
+  - `youtube`
+  - `ytmusic`
+  - `reddit`
 
 Use one Obtainium entry per app, all pointing to the same repository.
 
@@ -35,9 +35,9 @@ Required Obtainium fields per entry:
 
 1. Source: `GitHub`
 2. Repo URL: `https://github.com/<your-user>/<your-repo>`
-3. Track tag: one of the exact `morphe-*-latest` tags above
+3. Track tag: one of the exact tags above
 
-No regex is required when using the stable `-latest` tags.
+No regex is required when using these stable tags.
 
 ## Required Secrets
 
@@ -120,7 +120,7 @@ Workflow updates:
 - `cli_version`
 - `last_build`
 - `status`
-- `build_history` (rolling latest entries, includes run id, run number, commit, timestamp)
+- `build_history` (most recent entries, includes run id, run number, commit, timestamp)
 
 ## Performance Notes
 
@@ -128,9 +128,9 @@ Workflow updates:
 
 ## Artifacts And Releases
 
-- Workflow artifact upload includes versioned patched APKs.
-- GitHub Releases only use stable `-latest` tags (fixed asset name `<app>-latest.apk`).
-- Old version-pinned `morphe-<app>-...` releases are cleaned up automatically.
+- Workflow artifact upload includes versioned patched APKs named `<app>-<patches-version>-v<base-version>.apk`.
+- GitHub Releases use stable per-app tags (`youtube`, `ytmusic`, `reddit`) with fixed asset names (`<app>.apk`).
+- Old version-pinned tags and previous naming schemes are cleaned up automatically.
 
 ## Setup
 
@@ -158,7 +158,7 @@ Keystore format/password mismatch. Verify:
 
 ### Obtainium 404
 
-Use exact stable tags (`morphe-youtube-latest`, `morphe-ytmusic-latest`, `morphe-reddit-latest`) instead of regex-based matching.
+Use exact stable tags (`youtube`, `ytmusic`, `reddit`) instead of regex-based matching.
 
 ## Thanks
 

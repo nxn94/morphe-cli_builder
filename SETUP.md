@@ -67,12 +67,12 @@ Build only runs when Morphe patch or CLI versions changed.
 
 You get both:
 
-- GitHub Actions artifacts
+- GitHub Actions artifacts (`<app>-<patches-version>-v<base-version>.apk`)
 - GitHub Releases (per app)
 
 Per app releases include:
 
-- Stable tag for clients: `morphe-<app>-latest`
+- Stable tag for clients: `<app>` (`youtube`, `ytmusic`, `reddit`)
 - Old version-pinned release tags are removed by the workflow.
 
 ## 7. Add All 3 Apps To Obtainium
@@ -84,9 +84,9 @@ For each entry:
 1. Source: `GitHub`
 2. Repository URL: `https://github.com/<your-user>/<your-repo>`
 3. Track tag:
-   - YouTube: `morphe-youtube-latest`
-   - YouTube Music: `morphe-ytmusic-latest`
-   - Reddit: `morphe-reddit-latest`
+   - YouTube: `youtube`
+   - YouTube Music: `ytmusic`
+   - Reddit: `reddit`
 
 Do not use regex when these stable tags are available.
 
