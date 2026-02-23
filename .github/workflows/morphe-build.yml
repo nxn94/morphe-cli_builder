@@ -1134,6 +1134,12 @@ jobs:
           DEFAULTS_FILE="$RUNNER_TEMP/default_patches.json"
           EXISTING_FILE="$RUNNER_TEMP/existing_patches.json"
           PKGS='["com.google.android.youtube","com.google.android.apps.youtube.music","com.reddit.frontpage"]'
+          BEFORE_STATE_HASH="$(
+            if [ -f state.json ]; then sha256sum state.json | awk '{print $1}'; else echo "missing"; fi
+          )"
+          BEFORE_PATCHES_HASH="$(
+            if [ -f patches.json ]; then sha256sum patches.json | awk '{print $1}'; else echo "missing"; fi
+          )"
 
           # Keep repository patches.json in sync with latest upstream patches metadata
           # while preserving any user-edited true/false values.
@@ -1240,6 +1246,11 @@ jobs:
                  "build_history": $history
                }' state.json > state.json.tmp && mv state.json.tmp state.json
 
+          AFTER_STATE_HASH="$(sha256sum state.json | awk '{print $1}')"
+          AFTER_PATCHES_HASH="$(sha256sum patches.json | awk '{print $1}')"
+          echo "::notice::state.json hash: ${BEFORE_STATE_HASH} -> ${AFTER_STATE_HASH}"
+          echo "::notice::patches.json hash: ${BEFORE_PATCHES_HASH} -> ${AFTER_PATCHES_HASH}"
+
       - name: Commit state.json and patches.json
         run: |
           set -euo pipefail
@@ -1248,8 +1259,10 @@ jobs:
           git add state.json patches.json
 
           if git diff --cached --quiet; then
-            echo "::notice::No state/patches changes to commit."
-            exit 0
+            echo "::error::No state/patches changes detected after update step; refusing silent success."
+            echo "::notice::Current state.json:"
+            cat state.json || true
+            exit 1
           fi
 
           git commit -m "chore: update state and patches config - patches ${{ needs.check-versions.outputs.patches-branch }}/${{ needs.check-versions.outputs.patches-version }}, cli ${{ needs.check-versions.outputs.cli-branch }}/${{ needs.check-versions.outputs.cli-version }}"
