@@ -131,16 +131,10 @@ jobs:
         include:
           - name: youtube
             appId: com.google.android.youtube
-            apkMirrorOrg: google-inc
-            apkMirrorRepo: youtube
           - name: ytmusic
             appId: com.google.android.apps.youtube.music
-            apkMirrorOrg: google-inc
-            apkMirrorRepo: youtube-music
           - name: reddit
             appId: com.reddit.frontpage
-            apkMirrorOrg: redditinc
-            apkMirrorRepo: reddit
 
     env:
       # Where we'll put tools/artifacts
@@ -148,8 +142,7 @@ jobs:
       TOOLS_DIR: tools
       APKS_DIR: apps
       OUT_DIR: out
-      APKMD_CACHE_VERSION: "1"
-      APKMD_NPM_SPEC: "apkmirror-downloader@latest"
+      PLAYWRIGHT_CACHE_VERSION: "1"
       PATCHES_VERSION: ${{ needs.check-versions.outputs.patches-version }}
       CLI_VERSION: ${{ needs.check-versions.outputs.cli-version }}
       PATCHES_BRANCH: ${{ needs.check-versions.outputs.patches-branch }}
@@ -165,19 +158,19 @@ jobs:
           distribution: temurin
           java-version: "17" # any current LTS JRE is fine to run the CLI [9](https://aur.archlinux.org/packages/morphe-cli)
 
-      - name: Set up Node.js (for APKMirror downloader)
+      - name: Set up Node.js (for Playwright downloader)
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Restore npm cache (APKMirror downloader)
+      - name: Restore npm cache (Playwright downloader)
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: ${{ runner.os }}-apkmd-npm-${{ env.APKMD_CACHE_VERSION }}
+          key: ${{ runner.os }}-playwright-npm-${{ env.PLAYWRIGHT_CACHE_VERSION }}
 
-      - name: Install jq & APKMirror downloader
-        id: apkmd
+      - name: Install jq & Playwright downloader
+        id: downloader
         run: |
           set -euo pipefail
           
@@ -191,40 +184,12 @@ jobs:
             exit 1
           fi
 
-          npm install -g "${APKMD_NPM_SPEC}"
           npm install --no-save --no-package-lock playwright-core
-          NPM_GLOBAL_ROOT="$(npm root -g)"
-          APKMD_PACKAGE_JSON="$NPM_GLOBAL_ROOT/apkmirror-downloader/package.json"
-          if [ ! -f "$APKMD_PACKAGE_JSON" ]; then
-            echo "::error::apkmirror-downloader package.json not found at $APKMD_PACKAGE_JSON"
+          if [ ! -f ".github/scripts/apkmirror-playwright.js" ]; then
+            echo "::error::Playwright downloader script is missing: .github/scripts/apkmirror-playwright.js"
             exit 1
           fi
-
-          APKMD_BIN_REL="$(
-            node -e '
-              const fs = require("node:fs");
-              const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-              const bin = pkg.bin;
-              let rel = "";
-              if (typeof bin === "string") rel = bin;
-              else if (bin && typeof bin === "object") rel = bin.apkmd || Object.values(bin)[0] || "";
-              if (!rel) process.exit(2);
-              process.stdout.write(rel);
-            ' "$APKMD_PACKAGE_JSON"
-          )" || {
-            echo "::error::Could not resolve apkmirror-downloader bin entry from package metadata."
-            exit 1
-          }
-
-          APKMD_ENTRY="$NPM_GLOBAL_ROOT/apkmirror-downloader/${APKMD_BIN_REL#./}"
-          if [ ! -f "$APKMD_ENTRY" ]; then
-            echo "::error::Resolved apkmd entry does not exist: $APKMD_ENTRY"
-            exit 1
-          fi
-
-          echo "::notice::APKMirror downloader installed successfully"
-          echo "::notice::Using Node entrypoint: $APKMD_ENTRY"
-          node "$APKMD_ENTRY" --help >/dev/null 2>&1 || true
+          node --check .github/scripts/apkmirror-playwright.js
 
           PLAYWRIGHT_BROWSER_BIN="$(
             command -v google-chrome \
@@ -234,12 +199,11 @@ jobs:
               || true
           )"
           if [ -n "$PLAYWRIGHT_BROWSER_BIN" ]; then
-            echo "::notice::Detected browser for Playwright fallback: $PLAYWRIGHT_BROWSER_BIN"
+            echo "::notice::Detected browser for Playwright downloader: $PLAYWRIGHT_BROWSER_BIN"
           else
-            echo "::warning::No browser binary detected for Playwright fallback (google-chrome/chromium)."
+            echo "::warning::No browser binary detected for Playwright downloader (google-chrome/chromium)."
           fi
 
-          echo "entry=$APKMD_ENTRY" >> "$GITHUB_OUTPUT"
           echo "browser=$PLAYWRIGHT_BROWSER_BIN" >> "$GITHUB_OUTPUT"
 
       - name: Prepare dirs
@@ -452,17 +416,13 @@ jobs:
           TARGET_VERSION="${{ steps.targetver.outputs.version }}"
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
           APKEDITOR_JAR="${{ steps.morphe.outputs.apkeditor_jar }}"
-          APKMD_ENTRY="${{ steps.apkmd.outputs.entry }}"
-          PLAYWRIGHT_BROWSER_BIN="${{ steps.apkmd.outputs.browser }}"
-          APKMIRROR_ORG="${{ matrix.apkMirrorOrg }}"
-          APKMIRROR_REPO="${{ matrix.apkMirrorRepo }}"
+          PLAYWRIGHT_BROWSER_BIN="${{ steps.downloader.outputs.browser }}"
           
           # Create output directory if it doesn't exist
           mkdir -p "$APKS_DIR"
           rm -f "$APKS_DIR"/* || true
-          : > apkmd.log
 
-          # Optional manual source URL override (per app/per version) to bypass scraper issues.
+          # Manual source URL override (required, per app/per version).
           # patches.json shape:
           # "__morphe": {
           #   "download_urls": {
@@ -580,54 +540,8 @@ jobs:
                 ' | sort -nr | cut -d' ' -f2-
           }
 
-          download_with_apkmd() {
-            local version="$1"
-            local cfg="$RUNNER_TEMP/apkmd_${{ matrix.name }}_${version//[^0-9A-Za-z._-]/_}.json"
-            local runlog="$RUNNER_TEMP/apkmd_run_${{ matrix.name }}_${version//[^0-9A-Za-z._-]/_}.log"
-            jq -n \
-              --arg out "$APKS_DIR" \
-              --arg org "$APKMIRROR_ORG" \
-              --arg repo "$APKMIRROR_REPO" \
-              --arg ver "$version" \
-              '{
-                options: {
-                  outDir: $out,
-                  overwrite: true
-                },
-                apps: [
-                  {
-                    org: $org,
-                    repo: $repo,
-                    version: $ver
-                  }
-                ]
-              }' > "$cfg"
-            if [ -z "$APKMD_ENTRY" ] || [ ! -f "$APKMD_ENTRY" ]; then
-              echo "::error::APKMirror downloader entrypoint is missing: $APKMD_ENTRY"
-              return 1
-            fi
-            if ! node "$APKMD_ENTRY" "$cfg" 2>&1 | tee "$runlog" | tee -a apkmd.log; then
-              return 1
-            fi
-
-            # apkmd may exit 0 even when download failed; detect known failure text.
-            if grep -Eqi \
-              'Unable to download|cannot be loaded without JavaScript and cookies enabled|No package downloaded|error:' \
-              "$runlog"; then
-              return 1
-            fi
-            return 0
-          }
-
           download_with_manual_url() {
             local url="$1"
-            local ua='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36'
-            local page="$RUNNER_TEMP/apkmirror_page_${{ matrix.name }}.html"
-            local headers="$RUNNER_TEMP/apkmirror_headers_${{ matrix.name }}.txt"
-            local direct_url="$url"
-            local out_file="$RUNNER_TEMP/manual_${{ matrix.name }}"
-            local final_name=""
-            local ext=""
 
             download_with_playwright() {
               local source_url="$1"
@@ -637,7 +551,7 @@ jobs:
               local pw_ext=""
 
               if [ -z "$PLAYWRIGHT_BROWSER_BIN" ] || [ ! -x "$PLAYWRIGHT_BROWSER_BIN" ]; then
-                echo "::warning::Playwright fallback unavailable: browser binary not found."
+                echo "::warning::Playwright downloader unavailable: browser binary not found."
                 return 1
               fi
 
@@ -647,12 +561,12 @@ jobs:
                 "$PLAYWRIGHT_BROWSER_BIN" \
                 "$meta_file" \
                 "$bin_file"; then
-                echo "::warning::Playwright fallback download failed."
+                echo "::warning::Playwright download failed."
                 return 1
               fi
 
               if [ ! -s "$bin_file" ]; then
-                echo "::warning::Playwright fallback did not produce an APK payload."
+                echo "::warning::Playwright downloader did not produce an APK payload."
                 return 1
               fi
 
@@ -669,94 +583,17 @@ jobs:
               esac
 
               mv -f "$bin_file" "$APKS_DIR/$pw_name"
-              echo "::notice::Playwright fallback saved: $APKS_DIR/$pw_name"
+              echo "::notice::Playwright download saved: $APKS_DIR/$pw_name"
               return 0
             }
 
             if [ -z "$url" ]; then
+              echo "::error::Manual APKMirror URL is empty."
               return 1
             fi
 
             echo "::notice::Using manual APK source URL for ${APP_ID}: $url"
-
-            # If this is a release page, resolve the first direct APKMirror download link.
-            if ! printf '%s' "$direct_url" | grep -Eqi '(download\.php\?|\.apk($|[?])|\.xapk($|[?])|\.apkm($|[?])|\.apks($|[?]))'; then
-              if ! curl -fL -A "$ua" "$direct_url" -o "$page"; then
-                echo "::warning::Could not fetch manual source page: $direct_url"
-                echo "::notice::Trying Playwright fallback for manual source page..."
-                download_with_playwright "$url"
-                return $?
-              fi
-              if grep -qi 'cannot be loaded without JavaScript and cookies enabled' "$page"; then
-                echo "::warning::Manual source page is blocked by APKMirror anti-bot challenge."
-                echo "::notice::Trying Playwright fallback for manual source page..."
-                download_with_playwright "$url"
-                return $?
-              fi
-
-              direct_url="$( \
-                grep -Eo 'https://www\.apkmirror\.com/wp-content/themes/APKMirror/download\.php\?id=[^"[:space:]]+' "$page" | head -n1 \
-                  || true
-              )"
-              if [ -z "$direct_url" ]; then
-                direct_url="$( \
-                  grep -Eo '/wp-content/themes/APKMirror/download\.php\?id=[^"[:space:]]+' "$page" | head -n1 \
-                    || true
-                )"
-                if [ -n "$direct_url" ]; then
-                  direct_url="https://www.apkmirror.com${direct_url}"
-                fi
-              fi
-              if [ -z "$direct_url" ]; then
-                echo "::warning::Could not resolve direct download URL from manual page."
-                echo "::notice::Trying Playwright fallback for manual source page..."
-                download_with_playwright "$url"
-                return $?
-              fi
-            fi
-
-            if ! curl -fL -A "$ua" -H "Referer: $url" -D "$headers" "$direct_url" -o "$out_file"; then
-              echo "::warning::Manual download failed from: $direct_url"
-              echo "::notice::Trying Playwright fallback for manual direct download..."
-              download_with_playwright "$url"
-              return $?
-            fi
-
-            if file -b --mime-type "$out_file" | grep -q '^text/'; then
-              echo "::warning::Manual download returned text/html instead of APK file."
-              echo "::notice::Trying Playwright fallback for manual direct download..."
-              download_with_playwright "$url"
-              return $?
-            fi
-
-            final_name="$(
-              awk 'BEGIN{IGNORECASE=1}
-                   /^content-disposition:/{
-                     if (match($0, /filename="?[^\";]+"?/)) {
-                       name=substr($0, RSTART, RLENGTH)
-                       sub(/^filename="?/, "", name)
-                       sub(/"?$/, "", name)
-                       print name
-                     }
-                   }' "$headers" | tail -n1
-            )"
-
-            if [ -z "$final_name" ]; then
-              final_name="$(basename "${direct_url%%\?*}")"
-            fi
-            if [ -z "$final_name" ] || [ "$final_name" = "/" ]; then
-              final_name="${APP_ID}.apk"
-            fi
-
-            ext="${final_name##*.}"
-            case "${ext,,}" in
-              apk|xapk|apkm|apks) ;;
-              *) final_name="${APP_ID}.apk" ;;
-            esac
-
-            mv -f "$out_file" "$APKS_DIR/$final_name"
-            echo "::notice::Manual download saved: $APKS_DIR/$final_name"
-            return 0
+            download_with_playwright "$url"
           }
 
           APK_CANDIDATE=""
@@ -766,25 +603,18 @@ jobs:
             exit 1
           fi
 
-          DOWNLOAD_DONE=false
-          if [ -n "$MANUAL_URL" ]; then
-            echo "::notice::Trying manual source URL for latest Morphe-supported version $TARGET_VERSION..."
-            if download_with_manual_url "$MANUAL_URL"; then
-              echo "::notice::Manual source download completed for version $TARGET_VERSION"
-              DOWNLOAD_DONE=true
-            else
-              echo "::warning::Manual source download failed for version $TARGET_VERSION; retrying with apkmd."
-            fi
+          if [ -z "$MANUAL_URL" ]; then
+            echo "::error::No manual download URL configured for ${{ matrix.appId }} ($TARGET_VERSION)."
+            echo "::notice::Set patches.json -> __morphe.download_urls.${{ matrix.appId }}.${TARGET_VERSION} or latest_supported."
+            exit 1
           fi
 
-          if [ "$DOWNLOAD_DONE" != true ]; then
-            echo "::notice::Trying latest Morphe-supported version $TARGET_VERSION for ${{ matrix.appId }}..."
-            if download_with_apkmd "$TARGET_VERSION"; then
-              echo "::notice::apkmd completed for version $TARGET_VERSION"
-              DOWNLOAD_DONE=true
-            else
-              echo "::warning::apkmd failed for version $TARGET_VERSION"
-            fi
+          echo "::notice::Trying manual source URL for latest Morphe-supported version $TARGET_VERSION..."
+          if download_with_manual_url "$MANUAL_URL"; then
+            echo "::notice::Manual source download completed for version $TARGET_VERSION"
+          else
+            echo "::error::Manual source download failed for version $TARGET_VERSION."
+            exit 1
           fi
 
           APK_CANDIDATE="$(find_package_candidate)"
@@ -795,8 +625,6 @@ jobs:
           if [ -z "$APK_CANDIDATE" ]; then
             echo "::error::No package downloaded for latest Morphe-supported version $TARGET_VERSION for ${{ matrix.appId }}."
             echo "::notice::All compatible versions (for reference): $TARGET_VERSIONS"
-            echo "::notice::apkmd log:"
-            cat apkmd.log || true
             exit 1
           fi
 
@@ -815,8 +643,6 @@ jobs:
               ls -la
               echo "::notice::Files in $APKS_DIR:"
               ls -la "$APKS_DIR" || true
-              echo "::notice::apkmd log:"
-              cat apkmd.log || true
               exit 1
             fi
           fi

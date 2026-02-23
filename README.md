@@ -1,6 +1,6 @@
 # AutoMorpheBuilder
 
-Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches), [morphe-cli](https://github.com/MorpheApp/morphe-cli), [apkmirror-downloader](https://github.com/tanishqmanuja/apkmirror-downloader), and [APKEditor](https://github.com/REAndroid/APKEditor).
+Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches), [morphe-cli](https://github.com/MorpheApp/morphe-cli), [Playwright](https://playwright.dev/), and [APKEditor](https://github.com/REAndroid/APKEditor).
 
 ## Supported Apps
 
@@ -12,7 +12,7 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 
 1. Checks latest Morphe patch/CLI release tags.
 2. Skips build if versions are unchanged.
-3. Downloads app packages from APKMirror with either manual URL overrides from `patches.json` or `apkmirror-downloader` (`apkmd`).
+3. Downloads app packages from APKMirror using Playwright and manual URL overrides from `patches.json`.
 4. Prefers supported app versions from Morphe patch compatibility.
 5. Extracts/selects a patchable APK (prefers `arm64-v8a`, rejects dex-less split configs).
 6. Enforces signing (signed or fail).
@@ -62,7 +62,7 @@ Signed builds are enforced.
   }
   ```
 - Allowed values are `main` and `dev`.
-- Optional manual APK source override (used before `apkmd`):
+- Manual APK source override (required for each app):
   ```json
   "__morphe": {
     "download_urls": {
@@ -90,7 +90,7 @@ Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
 ## APK Selection Logic
 
-- Resolves Morphe-supported versions from patch compatibility and downloads only the latest supported version via `apkmd`.
+- Resolves Morphe-supported versions from patch compatibility and downloads only the latest supported version using Playwright.
 - Handles `.apk`, `.xapk`, `.apkm`.
 - For split packages (`.xapk/.apkm/.apks`), tries APKEditor merge first, then falls back to dex-bearing extraction if needed.
 - Prioritizes names containing `arm64-v8a`.
@@ -124,7 +124,7 @@ Workflow updates:
 
 ## Performance Notes
 
-- npm cache (`~/.npm`) is used to speed up `apkmirror-downloader` installation.
+- npm cache (`~/.npm`) is used to speed up Playwright dependency installation.
 
 ## Artifacts And Releases
 
@@ -142,7 +142,7 @@ Full setup steps are in [`SETUP.md`](SETUP.md).
 
 The workflow downloads only the latest Morphe-supported version. If that version is not downloadable, the build fails (no fallback to older supported versions).
 
-If APKMirror blocks scraper traffic with `This page cannot be loaded without JavaScript and cookies enabled`, set a manual URL in `patches.json` under `__morphe.download_urls` for that app/version.
+Verify `patches.json` has a manual URL for that app/version under `__morphe.download_urls`.
 
 ### Error: `Chosen APK has no classes.dex`
 
@@ -164,7 +164,7 @@ Use exact stable tags (`morphe-youtube-latest`, `morphe-ytmusic-latest`, `morphe
 
 - [Morphe patches](https://github.com/MorpheApp/morphe-patches) for patch definitions and compatibility metadata.
 - [morphe-cli](https://github.com/MorpheApp/morphe-cli) for patching and signing.
-- [apkmirror-downloader](https://github.com/tanishqmanuja/apkmirror-downloader) for APKMirror downloads.
+- [Playwright](https://playwright.dev/) for browser-driven APKMirror downloads.
 - [APKEditor](https://github.com/REAndroid/APKEditor) for split package merge support.
 - [AntiSplit-M](https://github.com/AbdurazaaqMohammed/AntiSplit-M) for practical split-APK workflow inspiration.
 - [Bouncy Castle](https://www.bouncycastle.org/) for keystore/provider compatibility used in signing conversion.
