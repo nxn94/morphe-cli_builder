@@ -657,6 +657,7 @@ jobs:
               fi
 
               pw_name="$(jq -r '.filename // empty' "$meta_file" 2>/dev/null || true)"
+              echo "::notice::Playwright meta: $(jq -c '{via, direct_url, filename, bytes, content_type}' "$meta_file" 2>/dev/null || cat "$meta_file" || true)"
               if [ -z "$pw_name" ]; then
                 pw_name="${APP_ID}.apk"
               fi

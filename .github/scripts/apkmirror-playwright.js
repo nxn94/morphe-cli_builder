@@ -35,6 +35,12 @@ function filenameFromDisposition(disposition) {
   return "";
 }
 
+function looksLikeHtml(buf) {
+  if (!buf || buf.length === 0) return false;
+  const head = buf.slice(0, 2048).toString("utf8").toLowerCase();
+  return head.includes("<html") || head.includes("<!doctype html");
+}
+
 function absUrl(href, base) {
   try {
     return new URL(href, base).toString();
@@ -78,7 +84,11 @@ async function collectCandidateLinks(page) {
   const browser = await chromium.launch({
     headless: true,
     executablePath: browserBin,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"]
+    args: [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled"
+    ]
   });
 
   const context = await browser.newContext({
@@ -141,6 +151,48 @@ async function collectCandidateLinks(page) {
     );
   }
 
+  // First try real browser download flow (less likely to be blocked than API request).
+  try {
+    const downloadPromise = page.waitForEvent("download", { timeout: 120000 });
+    await page.evaluate((u) => {
+      const a = document.createElement("a");
+      a.href = u;
+      a.target = "_self";
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+    }, directUrl);
+
+    const download = await downloadPromise;
+    const tmpPath = await download.path();
+    if (tmpPath) {
+      const payload = fs.readFileSync(tmpPath);
+      if (!looksLikeHtml(payload)) {
+        let dlFilename = download.suggestedFilename() || "";
+        if (!dlFilename) dlFilename = "download.apk";
+        fs.writeFileSync(binPath, payload);
+        fs.writeFileSync(
+          metaPath,
+          JSON.stringify(
+            {
+              filename: dlFilename,
+              direct_url: directUrl,
+              content_type: "",
+              bytes: payload.length,
+              via: "browser-download"
+            },
+            null,
+            2
+          )
+        );
+        await browser.close();
+        return;
+      }
+    }
+  } catch (_) {
+    // Fall through to API request fallback.
+  }
+
   const response = await context.request.get(directUrl, {
     timeout: 120000,
     maxRedirects: 5,
@@ -168,9 +220,15 @@ async function collectCandidateLinks(page) {
       });
       const retryType = (retryResp.headers()["content-type"] || "").toLowerCase();
       const retryBody = await retryResp.body();
-      if (retryResp.status() >= 200 && retryResp.status() < 300 && !retryType.startsWith("text/")) {
+      if (
+        retryResp.status() >= 200 &&
+        retryResp.status() < 300 &&
+        !retryType.startsWith("text/")
+      ) {
         const retryHeaders = retryResp.headers();
-        let retryFilename = filenameFromDisposition(retryHeaders["content-disposition"] || "");
+        let retryFilename = filenameFromDisposition(
+          retryHeaders["content-disposition"] || ""
+        );
         if (!retryFilename) retryFilename = "download.apk";
         fs.writeFileSync(binPath, retryBody);
         fs.writeFileSync(
@@ -180,7 +238,8 @@ async function collectCandidateLinks(page) {
               filename: retryFilename,
               direct_url: fallbackDirect,
               content_type: retryType,
-              bytes: retryBody.length
+              bytes: retryBody.length,
+              via: "api-retry"
             },
             null,
             2
@@ -217,7 +276,8 @@ async function collectCandidateLinks(page) {
         filename,
         direct_url: directUrl,
         content_type: contentType,
-        bytes: body.length
+        bytes: body.length,
+        via: "api"
       },
       null,
       2
