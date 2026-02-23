@@ -33,7 +33,7 @@ jobs:
           # Supported values: main, dev.
           PATCHES_BRANCH="main"
           CLI_BRANCH="main"
-          if [ -f patches.json ] && jq empty patches.json >/dev/null 2>&1; then
+          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
             PATCHES_BRANCH="$(jq -r '(.["__morphe"]?.branches?.morphe_patches // "main") | ascii_downcase' patches.json)"
             CLI_BRANCH="$(jq -r '(.["__morphe"]?.branches?.morphe_cli // "main") | ascii_downcase' patches.json)"
           fi
@@ -93,7 +93,7 @@ jobs:
           echo "cli-branch=$CLI_BRANCH" >> "$GITHUB_OUTPUT"
 
           # Load previous state
-          if [ -f state.json ] && jq empty state.json >/dev/null 2>&1; then
+          if [ -s state.json ] && jq -e 'type=="object"' state.json >/dev/null 2>&1; then
             PREV_PATCHES=$(jq -r '.patches_version // "none"' state.json)
             PREV_CLI=$(jq -r '.cli_version // "none"' state.json)
             PREV_PATCHES_BRANCH=$(jq -r '.patches_branch // "main"' state.json)
@@ -308,7 +308,7 @@ jobs:
           ' "$TOOLS_DIR/patches-list.json" > "$DEFAULTS_FILE"
 
           # Load existing user config if valid JSON, otherwise start fresh.
-          if [ -f patches.json ] && jq empty patches.json >/dev/null 2>&1; then
+          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
             cp patches.json "$EXISTING_FILE"
           else
             if [ -f patches.json ]; then
@@ -1176,7 +1176,7 @@ jobs:
             )
           ' "$PATCHES_LIST_FILE" > "$DEFAULTS_FILE"
 
-          if [ -f patches.json ] && jq empty patches.json >/dev/null 2>&1; then
+          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
             cp patches.json "$EXISTING_FILE"
           else
             echo '{}' > "$EXISTING_FILE"
@@ -1195,7 +1195,7 @@ jobs:
           ' > patches.json.tmp && mv patches.json.tmp patches.json
 
           # Ensure state file is valid JSON before merge/update.
-          if [ ! -f state.json ] || ! jq empty state.json >/dev/null 2>&1; then
+          if [ ! -s state.json ] || ! jq -e 'type=="object"' state.json >/dev/null 2>&1; then
             echo "::warning::state.json is missing or invalid JSON; recreating with defaults."
             echo '{}' > state.json
           fi
