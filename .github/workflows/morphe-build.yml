@@ -109,10 +109,13 @@ jobs:
           fi
 
           # Check if versions/channels changed
-          if [ "$PATCHES_TAG" != "$PREV_PATCHES" ] || \
-             [ "$CLI_TAG" != "$PREV_CLI" ] || \
-             [ "$PATCHES_BRANCH" != "$PREV_PATCHES_BRANCH" ] || \
-             [ "$CLI_BRANCH" != "$PREV_CLI_BRANCH" ]; then
+          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            echo "should-build=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Manual run detected; forcing build."
+          elif [ "$PATCHES_TAG" != "$PREV_PATCHES" ] || \
+               [ "$CLI_TAG" != "$PREV_CLI" ] || \
+               [ "$PATCHES_BRANCH" != "$PREV_PATCHES_BRANCH" ] || \
+               [ "$CLI_BRANCH" != "$PREV_CLI_BRANCH" ]; then
             echo "should-build=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Version/channel changes detected. Patches: $PREV_PATCHES_BRANCH/$PREV_PATCHES -> $PATCHES_BRANCH/$PATCHES_TAG, CLI: $PREV_CLI_BRANCH/$PREV_CLI -> $CLI_BRANCH/$CLI_TAG"
           else
@@ -1243,5 +1246,27 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add state.json patches.json
-          git commit -m "chore: update state and patches config - patches ${{ needs.check-versions.outputs.patches-branch }}/${{ needs.check-versions.outputs.patches-version }}, cli ${{ needs.check-versions.outputs.cli-branch }}/${{ needs.check-versions.outputs.cli-version }}" || true
-          git push || true
+
+          if git diff --cached --quiet; then
+            echo "::notice::No state/patches changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: update state and patches config - patches ${{ needs.check-versions.outputs.patches-branch }}/${{ needs.check-versions.outputs.patches-version }}, cli ${{ needs.check-versions.outputs.cli-branch }}/${{ needs.check-versions.outputs.cli-version }}"
+
+          BRANCH_NAME="${GITHUB_REF_NAME:-main}"
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${BRANCH_NAME}"; then
+              echo "::notice::Pushed state updates to ${BRANCH_NAME}."
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Failed to push state updates after ${attempt} attempts."
+              exit 1
+            fi
+
+            echo "::warning::Push rejected (attempt ${attempt}); rebasing on origin/${BRANCH_NAME} and retrying..."
+            git fetch origin "${BRANCH_NAME}"
+            git rebase "origin/${BRANCH_NAME}"
+          done
