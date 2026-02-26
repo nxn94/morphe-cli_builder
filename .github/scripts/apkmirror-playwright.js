@@ -3,11 +3,20 @@
 const fs = require("node:fs");
 const { chromium } = require("playwright-core");
 
-const [sourceUrl, browserBin, metaPath, binPath] = process.argv.slice(2);
-
-if (!sourceUrl || !browserBin || !metaPath || !binPath) {
+const args = process.argv.slice(2);
+if (args.length !== 3 && args.length !== 4) {
   console.error(
-    "Usage: apkmirror-playwright.js <source_url> <browser_bin> <meta_path> <bin_path>"
+    "Usage: apkmirror-playwright.js <source_url> [browser_bin] <meta_path> <bin_path>"
+  );
+  process.exit(2);
+}
+const [sourceUrl, arg2, arg3, arg4] = args;
+const browserBin = args.length === 4 ? arg2 : "";
+const metaPath = args.length === 4 ? arg3 : arg2;
+const binPath = args.length === 4 ? arg4 : arg3;
+if (!sourceUrl || !metaPath || !binPath) {
+  console.error(
+    "Usage: apkmirror-playwright.js <source_url> [browser_bin] <meta_path> <bin_path>"
   );
   process.exit(2);
 }
@@ -81,15 +90,17 @@ async function collectCandidateLinks(page) {
 }
 
 (async () => {
-  const browser = await chromium.launch({
+  const launchOptions = {
     headless: true,
-    executablePath: browserBin,
     args: [
       "--no-sandbox",
       "--disable-dev-shm-usage",
       "--disable-blink-features=AutomationControlled"
     ]
-  });
+  };
+  if (browserBin) launchOptions.executablePath = browserBin;
+
+  const browser = await chromium.launch(launchOptions);
 
   const context = await browser.newContext({
     userAgent: ua,
