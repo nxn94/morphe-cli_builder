@@ -553,16 +553,30 @@ jobs:
               local bin_file="$RUNNER_TEMP/apkmirror_pw_bin_${{ matrix.name }}"
               local pw_name=""
               local pw_ext=""
+              local attempt=1
+              local max_attempts=4
 
               rm -f "$meta_file" "$bin_file"
-              if ! node .github/scripts/apkmirror-playwright.js \
-                "$source_url" \
-                "$PLAYWRIGHT_BROWSER_BIN" \
-                "$meta_file" \
-                "$bin_file"; then
-                echo "::warning::Playwright download failed."
-                return 1
-              fi
+              while [ "$attempt" -le "$max_attempts" ]; do
+                echo "::notice::Playwright download attempt ${attempt}/${max_attempts}"
+                if node .github/scripts/apkmirror-playwright.js \
+                  "$source_url" \
+                  "$PLAYWRIGHT_BROWSER_BIN" \
+                  "$meta_file" \
+                  "$bin_file"; then
+                  break
+                fi
+
+                if [ "$attempt" -ge "$max_attempts" ]; then
+                  echo "::warning::Playwright download failed after ${max_attempts} attempts."
+                  return 1
+                fi
+
+                # Backoff helps when APKMirror/Cloudflare throttles automated traffic.
+                sleep $((attempt * 15))
+                rm -f "$meta_file" "$bin_file"
+                attempt=$((attempt + 1))
+              done
 
               if [ ! -s "$bin_file" ]; then
                 echo "::warning::Playwright downloader did not produce an APK payload."
@@ -592,6 +606,20 @@ jobs:
             fi
 
             echo "::notice::Using manual APK source URL for ${APP_ID}: $url"
+            case "${url,,}" in
+              *.apk|*.xapk|*.apkm|*.apks)
+                local direct_name="${url##*/}"
+                [ -z "$direct_name" ] && direct_name="${APP_ID}.apk"
+                echo "::notice::Manual URL points to a direct package file; downloading with curl."
+                if curl -fL --retry 4 --retry-delay 5 --connect-timeout 30 \
+                  -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36" \
+                  -o "$APKS_DIR/$direct_name" "$url"; then
+                  echo "::notice::Direct download saved: $APKS_DIR/$direct_name"
+                  return 0
+                fi
+                echo "::warning::Direct file download failed; falling back to Playwright flow."
+                ;;
+            esac
             download_with_playwright "$url"
           }
 
