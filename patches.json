@@ -1,8 +1,8 @@
 {
   "__morphe": {
     "branches": {
-      "morphe_patches": "main",
-      "morphe_cli": "main"
+      "morphe_patches": "dev",
+      "morphe_cli": "dev"
     },
     "download_urls": {
       "com.google.android.youtube": {

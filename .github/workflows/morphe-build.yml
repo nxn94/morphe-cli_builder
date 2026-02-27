@@ -192,7 +192,13 @@ jobs:
             echo "::error::Playwright downloader script is missing: .github/scripts/apkmirror-playwright.js"
             exit 1
           fi
+          if [ ! -f ".github/scripts/apkcombo-playwright.js" ]; then
+            echo "::warning::APKCombo downloader script is missing: .github/scripts/apkcombo-playwright.js"
+          fi
           node --check .github/scripts/apkmirror-playwright.js
+          if [ -f ".github/scripts/apkcombo-playwright.js" ]; then
+            node --check .github/scripts/apkcombo-playwright.js
+          fi
 
           PLAYWRIGHT_BROWSER_BIN="$(
             command -v google-chrome \
@@ -599,23 +605,66 @@ jobs:
             download_with_playwright "$url"
           }
 
+          download_with_apkcombo() {
+            local pkg="$1"
+            local ver="$2"
+            local meta_file="$RUNNER_TEMP/apkcombo_pw_meta_${{ matrix.name }}.json"
+            local bin_file="$RUNNER_TEMP/apkcombo_pw_bin_${{ matrix.name }}"
+            local pw_name=""
+            local pw_ext=""
+
+            if [ -z "$PLAYWRIGHT_BROWSER_BIN" ] || [ ! -x "$PLAYWRIGHT_BROWSER_BIN" ]; then
+              return 1
+            fi
+            if [ ! -f ".github/scripts/apkcombo-playwright.js" ]; then
+              return 1
+            fi
+
+            rm -f "$meta_file" "$bin_file"
+            if ! node .github/scripts/apkcombo-playwright.js \
+              "$pkg" \
+              "$ver" \
+              "$PLAYWRIGHT_BROWSER_BIN" \
+              "$meta_file" \
+              "$bin_file"; then
+              return 1
+            fi
+
+            if [ ! -s "$bin_file" ]; then
+              return 1
+            fi
+
+            pw_name="$(jq -r '.filename // empty' "$meta_file" 2>/dev/null || true)"
+            if [ -z "$pw_name" ]; then pw_name="${pkg}.apk"; fi
+            
+            # Ensure output directory is clean for this run
+            mv -f "$bin_file" "$APKS_DIR/$pw_name"
+            echo "::notice::APKCombo download saved: $APKS_DIR/$pw_name"
+            return 0
+          }
+
           APK_CANDIDATE=""
           if [ -z "$TARGET_VERSION" ]; then
             echo "::error::No latest Morphe-supported version was resolved for ${{ matrix.appId }}."
             exit 1
           fi
 
-          if [ -z "$MANUAL_URL" ]; then
-            echo "::error::No manual download URL configured for ${{ matrix.appId }} ($TARGET_VERSION)."
-            echo "::notice::Set patches.json -> __morphe.download_urls.${{ matrix.appId }}.${TARGET_VERSION} or latest_supported."
-            exit 1
+          DOWNLOAD_SUCCESS=false
+
+          # 1. Try APKCombo (Automated, no manual URL needed)
+          echo "::notice::Attempting automated download via APKCombo for $APP_ID $TARGET_VERSION..."
+          if download_with_apkcombo "$APP_ID" "$TARGET_VERSION"; then
+            DOWNLOAD_SUCCESS=true
+          # 2. Fallback to Manual URL (APKMirror)
+          elif [ -n "$MANUAL_URL" ]; then
+            echo "::warning::APKCombo failed; falling back to manual source URL..."
+            if download_with_manual_url "$MANUAL_URL"; then
+              DOWNLOAD_SUCCESS=true
+            fi
           fi
 
-          echo "::notice::Trying manual source URL for latest Morphe-supported version $TARGET_VERSION..."
-          if download_with_manual_url "$MANUAL_URL"; then
-            echo "::notice::Manual source download completed for version $TARGET_VERSION"
-          else
-            echo "::error::Manual source download failed for version $TARGET_VERSION."
+          if [ "$DOWNLOAD_SUCCESS" = false ]; then
+            echo "::error::All download methods failed for $APP_ID $TARGET_VERSION."
             exit 1
           fi
 
