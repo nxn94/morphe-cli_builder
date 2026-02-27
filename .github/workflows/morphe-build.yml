@@ -187,7 +187,8 @@ jobs:
             exit 1
           fi
 
-          npm install --no-save --no-package-lock playwright-core
+          npm install --no-save --no-package-lock playwright
+          npx playwright install --with-deps chromium
           if [ ! -f ".github/scripts/apkmirror-playwright.js" ]; then
             echo "::error::Playwright downloader script is missing: .github/scripts/apkmirror-playwright.js"
             exit 1
@@ -558,21 +559,30 @@ jobs:
               local bin_file="$RUNNER_TEMP/apkmirror_pw_bin_${{ matrix.name }}"
               local pw_name=""
               local pw_ext=""
-
-              if [ -z "$PLAYWRIGHT_BROWSER_BIN" ] || [ ! -x "$PLAYWRIGHT_BROWSER_BIN" ]; then
-                echo "::warning::Playwright downloader unavailable: browser binary not found."
-                return 1
-              fi
+              local attempt=1
+              local max_attempts=4
 
               rm -f "$meta_file" "$bin_file"
-              if ! node .github/scripts/apkmirror-playwright.js \
-                "$source_url" \
-                "$PLAYWRIGHT_BROWSER_BIN" \
-                "$meta_file" \
-                "$bin_file"; then
-                echo "::warning::Playwright download failed."
-                return 1
-              fi
+              while [ "$attempt" -le "$max_attempts" ]; do
+                echo "::notice::Playwright download attempt ${attempt}/${max_attempts}"
+                if node .github/scripts/apkmirror-playwright.js \
+                  "$source_url" \
+                  "$PLAYWRIGHT_BROWSER_BIN" \
+                  "$meta_file" \
+                  "$bin_file"; then
+                  break
+                fi
+
+                if [ "$attempt" -ge "$max_attempts" ]; then
+                  echo "::warning::Playwright download failed after ${max_attempts} attempts."
+                  return 1
+                fi
+
+                # Backoff helps when APKMirror/Cloudflare throttles automated traffic.
+                sleep $((attempt * 15))
+                rm -f "$meta_file" "$bin_file"
+                attempt=$((attempt + 1))
+              done
 
               if [ ! -s "$bin_file" ]; then
                 echo "::warning::Playwright downloader did not produce an APK payload."
@@ -602,6 +612,20 @@ jobs:
             fi
 
             echo "::notice::Using manual APK source URL for ${APP_ID}: $url"
+            case "${url,,}" in
+              *.apk|*.xapk|*.apkm|*.apks)
+                local direct_name="${url##*/}"
+                [ -z "$direct_name" ] && direct_name="${APP_ID}.apk"
+                echo "::notice::Manual URL points to a direct package file; downloading with curl."
+                if curl -fL --retry 4 --retry-delay 5 --connect-timeout 30 \
+                  -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36" \
+                  -o "$APKS_DIR/$direct_name" "$url"; then
+                  echo "::notice::Direct download saved: $APKS_DIR/$direct_name"
+                  return 0
+                fi
+                echo "::warning::Direct file download failed; falling back to Playwright flow."
+                ;;
+            esac
             download_with_playwright "$url"
           }
 
@@ -1073,7 +1097,7 @@ jobs:
 
           APK_FILE="out/${{ steps.patch.outputs.output }}"
           APK_VERSION="${{ steps.getapk.outputs.version }}"
-          RELEASE_TAG="${{ matrix.name }}"
+          RELEASE_TAG="${{ matrix.name }}-v${APK_VERSION}"
           RELEASE_TITLE="${{ matrix.name }} (${PATCHES_VERSION}, base ${APK_VERSION})"
           RELEASE_ASSET_NAME="${{ matrix.name }}.apk"
 
@@ -1109,47 +1133,12 @@ jobs:
             fi
           }
 
-          cleanup_old_versioned_releases() {
-            local app_name="${{ matrix.name }}"
-            local keep_tag="$RELEASE_TAG"
-            local -a old_tags=()
-
-            mapfile -t old_tags < <(
-              gh api "repos/${{ github.repository }}/releases?per_page=100" --jq '
-                .[]
-                | .tag_name
-              ' \
-              | awk -v app="$app_name" -v keep="$keep_tag" '
-                  $0 != keep && (
-                    $0 ~ ("^morphe-" app "(-|$)")
-                    || $0 ~ ("^" app "-latest$")
-                    || $0 ~ ("^" app "-v")
-                  ) { print $0 }
-                ' \
-              || true
-            )
-
-            if [ "${#old_tags[@]}" -eq 0 ]; then
-              echo "::notice::No old version-pinned releases found for $app_name."
-              return 0
-            fi
-
-            for tag in "${old_tags[@]}"; do
-              [ -z "$tag" ] && continue
-              echo "::notice::Deleting old version-pinned release: $tag"
-              gh release delete "$tag" --cleanup-tag -y || true
-            done
-          }
-
-          # Stable tag for Obtainium (no regex needed), asset name is fixed and overwritten.
+          # Versioned tag per app/base version; reruns for same version update that release.
           publish_release \
             "$RELEASE_TAG" \
             "$RELEASE_TITLE" \
             "$RELEASE_NOTES" \
             "$APK_FILE#${RELEASE_ASSET_NAME}"
-
-          # Keep only the rolling release for this app.
-          cleanup_old_versioned_releases
           echo "::notice::Published tag: ${RELEASE_TAG}"
 
   update-state:
