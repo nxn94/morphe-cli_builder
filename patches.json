@@ -84,7 +84,9 @@
   },
   "com.google.android.apps.youtube.music": {
     "Bypass certificate checks": true,
+    "Change header": true,
     "Change miniplayer color": true,
+    "Change start page": true,
     "Check watch history domain name resolution": true,
     "Custom branding": true,
     "Disable DRC audio": true,
