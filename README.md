@@ -1,5 +1,7 @@
 # AutoMorpheBuilder
 
+> **Warning:** This project is vibecoded and a work in progress. Expect bugs, breaking changes, and incomplete documentation.
+
 Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches), [morphe-cli](https://github.com/MorpheApp/morphe-cli), [Playwright](https://playwright.dev/), and [APKEditor](https://github.com/REAndroid/APKEditor).
 
 ## Supported Apps

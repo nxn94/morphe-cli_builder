@@ -1190,7 +1190,7 @@ jobs:
           # while preserving any user-edited true/false values.
           curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
             -o "$PATCHES_LIST_FILE"
-          jq '. as $src
+          jq --argjson pkgs "$PKGS" '. as $src
             |
             def compat_pkg_names($patch):
               if ($patch.compatiblePackages? | type) == "object" then
