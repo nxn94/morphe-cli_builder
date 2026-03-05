@@ -46,37 +46,39 @@ Edit `patches.json` to choose patches:
 - Set Morphe channels in the top metadata block:
   - `"morphe_patches": "main"` or `"dev"`
   - `"morphe_cli": "main"` or `"dev"`
-- `true` enables
-- `false` disables
+- Set preferred architecture (optional, defaults to `arm64-v8a`):
+  - `"preferred_arch": "arm64-v8a"`
+- Add APKMirror path mapping for each app (required for auto-resolution):
+  - `"apkmirror_paths": { "com.google.android.youtube": "google-inc/youtube", ... }`
+- `true` enables a patch
+- `false` disables a patch
 
 Workflow behavior:
 
 - Missing upstream patches are auto-added.
 - Existing true/false edits are preserved.
 - Build logs show enabled and disabled patch lists per app.
-- **Required:** Define manual download URLs in `__morphe.download_urls` for each app.
+- **Automatic URL resolution:** The workflow automatically finds the latest Morphe-supported version and resolves the APKMirror download URL.
+- Manual URLs in `download_urls` are used as fallback if auto-resolution fails.
 
 Example `patches.json` structure:
 
 ```json
 {
   "__morphe": {
+    "preferred_arch": "arm64-v8a",
+    "apkmirror_paths": {
+      "com.google.android.youtube": "google-inc/youtube",
+      "com.google.android.apps.youtube.music": "google-inc/youtube-music",
+      "com.reddit.frontpage": "redditinc/reddit"
+    },
     "branches": {
       "morphe_patches": "main",
       "morphe_cli": "main"
     },
     "download_urls": {
       "com.google.android.youtube": {
-        "20.40.45": "https://www.apkmirror.com/apk/google-inc/youtube/youtube-20-40-45-android-apk-download/",
-        "latest_supported": "https://www.apkmirror.com/apk/google-inc/youtube/youtube-20-40-45-android-apk-download/"
-      },
-      "com.google.android.apps.youtube.music": {
-        "6.45.52": "https://www.apkmirror.com/apk/google-inc/youtube-music/youtube-music-6-45-52-android-apk-download/",
-        "latest_supported": "https://www.apkmirror.com/apk/google-inc/youtube-music/youtube-music-6-45-52-android-apk-download/"
-      },
-      "com.reddit.frontpage": {
-        "2024.45.0": "https://www.apkmirror.com/apk/redditinc/reddit/reddit-2024-45-0-android-apk-download/",
-        "latest_supported": "https://www.apkmirror.com/apk/redditinc/reddit/reddit-2024-45-0-android-apk-download/"
+        "latest_supported": "https://www.apkmirror.com/apk/google-inc/youtube/..."
       }
     }
   },
@@ -92,9 +94,10 @@ Example `patches.json` structure:
 }
 ```
 
-The workflow resolves download URLs in this order:
-1. `__morphe.download_urls.<appId>.<target_version>`
-2. `__morphe.download_urls.<appId>.latest_supported`
+URL resolution order (at build time):
+1. Automatic: Query morphe-cli for latest supported version, then resolve APKMirror URL
+2. Manual fallback: `__morphe.download_urls.<appId>.<target_version>`
+3. Manual fallback: `__morphe.download_urls.<appId>.latest_supported`
 
 ## 5. Run The Workflow
 
@@ -125,17 +128,19 @@ For each entry:
 
 ## 8. Notes On APK Selection
 
-Workflow prefers patchable `arm64-v8a` APKs and rejects split config APKs without `classes.dex`.
-For `.xapk/.apkm/.apks`, it attempts APKEditor merge to produce a normal APK before fallback extraction.
-
-The workflow tries only the latest Morphe-supported version per app. If that exact version cannot be downloaded, the build fails.
-You must provide a valid manual download URL for the latest supported version.
+- Architecture: Configurable via `preferred_arch` (default: `arm64-v8a`)
+- DPI preference: `nodpi` > single DPI values > DPI ranges
+- Workflow prefers configured architecture and rejects split config APKs without `classes.dex`.
+- For `.xapk/.apkm/.apks`, it attempts APKEditor merge to produce a normal APK before fallback extraction.
 
 ## Common Failures
 
-### `No manual URL configured`
+### `Could not resolve APKMirror URL`
 
-Add manual download URLs to `patches.json` under `__morphe.download_urls`. The workflow does not have automated downloads - you must provide URLs.
+The automatic URL resolution failed. Check:
+- APKMirror is accessible from GitHub Actions
+- The `apkmirror_paths` in `patches.json` are correct for each app
+- Fallback: Add manual URLs to `__morphe.download_urls`
 
 ### `Wrong version of key store`
 

@@ -123,6 +123,112 @@ jobs:
             echo "::notice::No version/channel changes detected. Skipping build."
           fi
 
+      - name: Setup Node.js
+        if: steps.version-check.outputs.should-build == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        if: steps.version-check.outputs.should-build == 'true'
+        run: npm install --no-save playwright
+
+      - name: Install Playwright browsers
+        if: steps.version-check.outputs.should-build == 'true'
+        run: npx playwright install chromium
+
+      - name: Resolve latest APK versions from APKMirror
+        if: steps.version-check.outputs.should-build == 'true'
+        run: |
+          set -euo pipefail
+
+          PATCHES_VERSION="${{ steps.version-check.outputs.patches-version }}"
+          CLI_VERSION="${{ steps.version-check.outputs.cli-version }}"
+          PATCHES_BRANCH="${{ steps.version-check.outputs.patches-branch }}"
+          CLI_BRANCH="${{ steps.version-check.outputs.cli-branch }}"
+
+          mkdir -p tools
+          cd tools
+
+          echo "::notice::Downloading morphe-cli $CLI_VERSION..."
+          gh release download "$CLI_VERSION" --repo MorpheApp/morphe-cli -p morphe-cli.jar || true
+
+          echo "::notice::Downloading morphe-patches $PATCHES_VERSION..."
+          gh release download "$PATCHES_VERSION" --repo MorpheApp/morphe-patches -p patches.mpp -O patches.mpp || true
+
+          mkdir -p tools
+          if [ -f morphe-cli.jar ]; then
+            mv morphe-cli.jar tools/ 2>/dev/null || true
+          fi
+          if [ -f patches.mpp ]; then
+            mv patches.mpp tools/ 2>/dev/null || true
+          fi
+
+          if [ -f tools/morphe-cli.jar ] && [ -f tools/patches.mpp ]; then
+            CLI_JAR="tools/morphe-cli.jar"
+            PATCHES_FILE="tools/patches.mpp"
+          else
+            echo "::warning::Failed to download morphe-cli/patches; using local tools if available."
+            if [ -f morphe-cli.jar ] && [ -f patches.mpp ]; then
+              CLI_JAR="morphe-cli.jar"
+              PATCHES_FILE="patches.mpp"
+            else
+              echo "::warning::Local morphe-cli/patches not found; skipping automatic URL resolution."
+              exit 0
+            fi
+          fi
+
+          PREFERRED_ARCH="$(jq -r '.__morphe?.preferred_arch // "arm64-v8a"' patches.json)"
+
+          PKGS='["com.google.android.youtube","com.google.android.apps.youtube.music","com.reddit.frontpage"]'
+
+          for PKG in $(echo "$PKGS" | jq -r '.[]'); do
+            echo "::notice::Finding latest supported version for $PKG..."
+
+            PATCHES_OUTPUT=$(java -jar "$CLI_JAR" list-patches --patches "$PATCHES_FILE" --with-packages --with-versions 2>/dev/null) || true
+
+            if [ -z "$PATCHES_OUTPUT" ]; then
+              echo "::warning::Could not get patches list for $PKG; using existing URL from patches.json."
+              continue
+            fi
+
+            PKG_BLOCK=$(echo "$PATCHES_OUTPUT" | sed -n "/$PKG/,/Compatible packages:/p" | head -n 20)
+
+            LATEST_VERSION=$(echo "$PKG_BLOCK" | grep -A 20 "Compatible versions:" | grep -E "^[0-9]" | head -n 1 | tr -d ' ' || true)
+
+            if [ -z "$LATEST_VERSION" ]; then
+              echo "::warning::Could not determine latest version for $PKG; using existing URL from patches.json."
+              continue
+            fi
+
+            echo "::notice::Latest supported version for $PKG: $LATEST_VERSION"
+
+            BROWSER_BIN=$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)
+
+            if [ -n "$BROWSER_BIN" ]; then
+              echo "::notice::Resolving APKMirror URL for $PKG $LATEST_VERSION..."
+              RESULT=$(node .github/scripts/apkmirror-version-resolver.js "$PKG" "$LATEST_VERSION" "$PREFERRED_ARCH" "$BROWSER_BIN" 2>&1) || true
+
+              if echo "$RESULT" | jq -e '.download_url' >/dev/null 2>&1; then
+                DOWNLOAD_URL=$(echo "$RESULT" | jq -r '.download_url')
+                echo "::notice::Resolved URL for $PKG $LATEST_VERSION: $DOWNLOAD_URL"
+
+                jq --arg pkg "$PKG" --arg ver "$LATEST_VERSION" --arg url "$DOWNLOAD_URL" \
+                  '.__morphe.download_urls[$pkg][$ver] = $url | .__morphe.download_urls[$pkg]["latest_supported"] = $url' \
+                  patches.json > patches.json.tmp && mv patches.json.tmp patches.json
+              else
+                echo "::warning::Failed to resolve URL for $PKG: $RESULT"
+              fi
+            else
+              echo "::warning::No browser found; cannot resolve APKMirror URLs automatically."
+            fi
+          done
+
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add patches.json
+          git diff --cached --quiet || git commit -m "chore: auto-resolve APK download URLs - patches $PATCHES_VERSION, cli $CLI_VERSION"
+
   build:
     needs: check-versions
     if: needs.check-versions.outputs.should-build == 'true'

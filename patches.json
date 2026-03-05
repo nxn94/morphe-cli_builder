@@ -1,5 +1,11 @@
 {
   "__morphe": {
+    "preferred_arch": "arm64-v8a",
+    "apkmirror_paths": {
+      "com.google.android.youtube": "google-inc/youtube",
+      "com.google.android.apps.youtube.music": "google-inc/youtube-music",
+      "com.reddit.frontpage": "redditinc/reddit"
+    },
     "branches": {
       "morphe_patches": "dev",
       "morphe_cli": "dev"

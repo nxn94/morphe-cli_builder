@@ -14,13 +14,13 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 
 1. Checks latest Morphe patch/CLI release tags.
 2. Skips build if versions are unchanged.
-3. Downloads app packages using Playwright with manual URL overrides from `patches.json`.
-4. Prefers supported app versions from Morphe patch compatibility.
-5. Extracts/selects a patchable APK (prefers `arm64-v8a`, rejects dex-less split configs).
+3. **Automatically resolves latest supported app versions** from morphe-cli and finds APKMirror download URLs.
+4. Falls back to manual URLs in `patches.json` if automatic resolution fails.
+5. Extracts/selects a patchable APK (prefers configured architecture, rejects dex-less split configs).
 6. Enforces signing (signed or fail).
 7. Runs `morphe-cli` and applies your patch config from `patches.json`.
 8. Publishes artifacts and creates a GitHub Release.
-9. Updates `state.json` and keeps `patches.json` synced with upstream patch list (without overriding your existing true/false edits).
+9. Updates `state.json` and keeps `patches.json` synced with upstream patch list.
 
 ## Release And Obtainium Model
 
@@ -53,17 +53,30 @@ Signed builds are enforced.
 
 ## Patch Configuration (`patches.json`)
 
-- Branch/channel selection for Morphe sources is configured at the top:
-  ```json
-  "__morphe": {
-    "branches": {
-      "morphe_patches": "main",
-      "morphe_cli": "main"
-    }
+### Configuration Options
+
+```json
+"__morphe": {
+  "preferred_arch": "arm64-v8a",
+  "apkmirror_paths": {
+    "com.google.android.youtube": "google-inc/youtube",
+    "com.google.android.apps.youtube.music": "google-inc/youtube-music",
+    "com.reddit.frontpage": "redditinc/reddit"
+  },
+  "branches": {
+    "morphe_patches": "main",
+    "morphe_cli": "main"
   }
-  ```
-- Allowed values are `main` and `dev`.
-- Manual APK source override (required for each app):
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `preferred_arch` | `arm64-v8a` | Preferred CPU architecture (e.g., `arm64-v8a`, `armeabi-v7a`) |
+| `apkmirror_paths` | required | Mapping of package IDs to APKMirror app paths |
+
+- Allowed branch values: `main` and `dev`.
+- Manual APK URLs (fallback if auto-resolution fails):
   ```json
   "__morphe": {
     "download_urls": {
@@ -91,7 +104,15 @@ Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
 ## Download Flow
 
-The workflow requires manual download URLs in `patches.json`. You must provide APKMirror (or similar) download URLs for each app version you want to build.
+The workflow automatically resolves APK download URLs at build time:
+
+1. Uses `morphe-cli list-patches` to find the latest Morphe-supported version for each app
+2. Uses Playwright to navigate APKMirror and find the download URL for that version
+3. Prefers architecture: `preferred_arch` (default: `arm64-v8a`)
+4. Prefers DPI: `nodpi` > higher single DPI values > DPI ranges
+5. Falls back to manual URLs in `patches.json` if automatic resolution fails
+
+The resolved URLs are committed to `patches.json` before the build starts.
 
 The workflow:
 1. Checks Morphe for the latest supported version of each app
