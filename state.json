@@ -1,9 +1,9 @@
 {
   "patches_branch": "dev",
-  "patches_version": "v1.17.0-dev.3",
+  "patches_version": "v1.17.0-dev.6",
   "cli_branch": "dev",
-  "cli_version": "v1.5.0-dev.9",
-  "last_build": "2026-03-05T06:04:38Z",
+  "cli_version": "v1.5.0-dev.10",
+  "last_build": "2026-03-05T19:34:20Z",
   "status": "success",
   "build_history": [
     {
@@ -115,6 +115,17 @@
       "run_id": "22704656551",
       "run_number": 66,
       "commit": "86e1750c5c1d826b0554e270b4358dc3273796e6"
+    },
+    {
+      "timestamp": "2026-03-05T19:34:20Z",
+      "patches_version": "v1.17.0-dev.6",
+      "cli_version": "v1.5.0-dev.10",
+      "patches_branch": "dev",
+      "cli_branch": "dev",
+      "status": "success",
+      "run_id": "22733197310",
+      "run_number": 69,
+      "commit": "87d42fb775b8d7f82c39fda605eaa15123010a36"
     }
   ]
 }
