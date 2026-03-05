@@ -150,10 +150,10 @@ jobs:
           mkdir -p tools
 
           echo "::notice::Downloading morphe-cli $CLI_VERSION..."
-          gh release download "$CLI_VERSION" --repo MorpheApp/morphe-cli --pattern "*.jar" -O . || true
+          gh release download "$CLI_VERSION" --repo MorpheApp/morphe-cli --pattern "*.jar" --clobber || true
 
           echo "::notice::Downloading morphe-patches $PATCHES_VERSION..."
-          gh release download "$PATCHES_VERSION" --repo MorpheApp/morphe-patches --pattern "*.mpp" -O . || true
+          gh release download "$PATCHES_VERSION" --repo MorpheApp/morphe-patches --pattern "*.mpp" --clobber || true
 
           # Find and rename downloaded files
           if ls morphe-cli-*.jar 1> /dev/null 2>&1; then
