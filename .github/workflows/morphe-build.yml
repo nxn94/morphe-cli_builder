@@ -1089,60 +1089,81 @@ jobs:
           name: ${{ matrix.name }}-${{ env.PATCHES_VERSION }}-v${{ steps.getapk.outputs.version }}
           path: out/${{ steps.patch.outputs.output }}
 
-      - name: Publish release for ${{ matrix.name }}
+  create-release:
+    needs: [check-versions, build]
+    if: needs.build.result == 'success' && needs.check-versions.outputs.should-build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all APKs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-*-v*"
+          path: apks
+          merge-multiple: true
+
+      - name: List downloaded APKs
+        run: |
+          echo "Downloaded APKs:"
+          ls -la apks/
+
+      - name: Create single release with all APKs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          APK_FILE="out/${{ steps.patch.outputs.output }}"
-          APK_VERSION="${{ steps.getapk.outputs.version }}"
-          RELEASE_TAG="${{ matrix.name }}-v${APK_VERSION}"
-          RELEASE_TITLE="${{ matrix.name }} (${PATCHES_VERSION}, base ${APK_VERSION})"
-          RELEASE_ASSET_NAME="${{ matrix.name }}.apk"
+          DATE_TAG="v$(date -u +%Y.%m.%d)"
+          PATCHES_VERSION="${{ needs.check-versions.outputs.patches-version }}"
+          CLI_VERSION="${{ needs.check-versions.outputs.cli-version }}"
+          PATCHES_BRANCH="${{ needs.check-versions.outputs.patches-branch }}"
+          CLI_BRANCH="${{ needs.check-versions.outputs.cli-branch }}"
 
-          if [ ! -f "$APK_FILE" ]; then
-            echo "::error::APK file not found for release: $APK_FILE"
-            exit 1
-          fi
+          RELEASE_TITLE="Morphe Patched Apps (${PATCHES_VERSION}, ${CLI_BRANCH}-${CLI_VERSION})"
 
           RELEASE_NOTES="$(cat <<EOF
-          Rolling release for ${{ matrix.appId }}.
-          Current base app version: ${APK_VERSION}
-          Current patches channel: ${PATCHES_BRANCH}
-          Current patches version: ${PATCHES_VERSION}
-          Current CLI channel: ${CLI_BRANCH}
-          Current CLI version: ${CLI_VERSION}
+          Morphe-patched apps release.
+
+          **Patches channel:** ${PATCHES_BRANCH}
+          **Patches version:** ${PATCHES_VERSION}
+          **CLI channel:** ${CLI_BRANCH}
+          **CLI version:** ${CLI_VERSION}
+
+          ## Available APKs
+          $(ls -1 apks/*.apk | xargs -I {} basename {})
+
+          ## Obtainium Setup
+          Use filename filtering to subscribe to specific apps:
+          - YouTube: \`^youtube.*\\.apk$\`
+          - YouTube Music: \`^ytmusic.*\\.apk$\`
+          - Reddit: \`^reddit.*\\.apk$\`
           EOF
           )"
 
-          publish_release() {
-            local tag="$1"
-            local title="$2"
-            local notes="$3"
-            local asset="$4"
-            if gh release view "$tag" >/dev/null 2>&1; then
-              echo "::notice::Release $tag exists; updating asset and notes."
-              gh release upload "$tag" "$asset" --clobber
-              gh release edit "$tag" --title "$title" --notes "$notes"
-            else
-              echo "::notice::Creating release $tag"
-              gh release create "$tag" "$asset" \
-                --title "$title" \
-                --notes "$notes"
-            fi
-          }
+          if [ -z "$(ls -A apks/)" ]; then
+            echo "::error::No APK files found in apks/ directory"
+            exit 1
+          fi
 
-          # Versioned tag per app/base version; reruns for same version update that release.
-          publish_release \
-            "$RELEASE_TAG" \
-            "$RELEASE_TITLE" \
-            "$RELEASE_NOTES" \
-            "$APK_FILE#${RELEASE_ASSET_NAME}"
-          echo "::notice::Published tag: ${RELEASE_TAG}"
+          if gh release view "$DATE_TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $DATE_TAG exists; uploading new assets."
+            for apk in apks/*.apk; do
+              gh release upload "$DATE_TAG" "$apk" --clobber
+            done
+            gh release edit "$DATE_TAG" --title "$RELEASE_TITLE" --notes "$RELEASE_NOTES"
+          else
+            echo "::notice::Creating release $DATE_TAG"
+            gh release create "$DATE_TAG" apks/*.apk \
+              --title "$RELEASE_TITLE" \
+              --notes "$RELEASE_NOTES"
+          fi
+
+          echo "::notice::Published release: ${DATE_TAG}"
 
   update-state:
-    needs: [check-versions, build]
+    needs: [check-versions, build, create-release]
     if: needs.build.result == 'success' && needs.check-versions.outputs.should-build == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -1169,8 +1190,6 @@ jobs:
           # while preserving any user-edited true/false values.
           curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
             -o "$PATCHES_LIST_FILE"
-
-          jq --argjson pkgs "$PKGS" '
             . as $src
             |
             def compat_pkg_names($patch):
