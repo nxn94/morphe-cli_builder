@@ -148,20 +148,19 @@ jobs:
           CLI_BRANCH="${{ steps.version-check.outputs.cli-branch }}"
 
           mkdir -p tools
-          cd tools
 
           echo "::notice::Downloading morphe-cli $CLI_VERSION..."
-          gh release download "$CLI_VERSION" --repo MorpheApp/morphe-cli -p morphe-cli.jar || true
+          gh release download "$CLI_VERSION" --repo MorpheApp/morphe-cli --pattern "*.jar" -O . || true
 
           echo "::notice::Downloading morphe-patches $PATCHES_VERSION..."
-          gh release download "$PATCHES_VERSION" --repo MorpheApp/morphe-patches -p patches.mpp -O patches.mpp || true
+          gh release download "$PATCHES_VERSION" --repo MorpheApp/morphe-patches --pattern "*.mpp" -O . || true
 
-          mkdir -p tools
-          if [ -f morphe-cli.jar ]; then
-            mv morphe-cli.jar tools/ 2>/dev/null || true
+          # Find and rename downloaded files
+          if ls morphe-cli-*.jar 1> /dev/null 2>&1; then
+            mv morphe-cli-*.jar tools/morphe-cli.jar 2>/dev/null || true
           fi
-          if [ -f patches.mpp ]; then
-            mv patches.mpp tools/ 2>/dev/null || true
+          if ls patches-*.mpp 1> /dev/null 2>&1; then
+            mv patches-*.mpp tools/patches.mpp 2>/dev/null || true
           fi
 
           if [ -f tools/morphe-cli.jar ] && [ -f tools/patches.mpp ]; then
@@ -169,9 +168,9 @@ jobs:
             PATCHES_FILE="tools/patches.mpp"
           else
             echo "::warning::Failed to download morphe-cli/patches; using local tools if available."
-            if [ -f morphe-cli.jar ] && [ -f patches.mpp ]; then
-              CLI_JAR="morphe-cli.jar"
-              PATCHES_FILE="patches.mpp"
+            if [ -f tools/morphe-cli.jar ] && [ -f tools/patches.mpp ]; then
+              CLI_JAR="tools/morphe-cli.jar"
+              PATCHES_FILE="tools/patches.mpp"
             else
               echo "::warning::Local morphe-cli/patches not found; skipping automatic URL resolution."
               exit 0
