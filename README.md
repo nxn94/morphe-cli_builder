@@ -14,32 +14,31 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 
 1. Checks latest Morphe patch/CLI release tags.
 2. Skips build if versions are unchanged.
-3. Downloads app packages from APKMirror using Playwright and manual URL overrides from `patches.json`.
+3. Downloads app packages using Playwright with manual URL overrides from `patches.json`.
 4. Prefers supported app versions from Morphe patch compatibility.
 5. Extracts/selects a patchable APK (prefers `arm64-v8a`, rejects dex-less split configs).
 6. Enforces signing (signed or fail).
 7. Runs `morphe-cli` and applies your patch config from `patches.json`.
-8. Publishes artifacts and rolling GitHub Releases per app.
+8. Publishes artifacts and creates a GitHub Release.
 9. Updates `state.json` and keeps `patches.json` synced with upstream patch list (without overriding your existing true/false edits).
 
 ## Release And Obtainium Model
 
-Each app gets:
+Each build creates a single GitHub Release with a date-based tag (`vYYYY.MM.DD`).
 
-- A stable tag for Obtainium:
-  - `youtube`
-  - `ytmusic`
-  - `reddit`
+For Obtainium, use filename regex filtering:
 
-Use one Obtainium entry per app, all pointing to the same repository.
+| App | Regex |
+|-----|-------|
+| YouTube | `^youtube.*\.apk$` |
+| YouTube Music | `^ytmusic.*\.apk$` |
+| Reddit | `^reddit.*\.apk$` |
 
 Required Obtainium fields per entry:
 
 1. Source: `GitHub`
 2. Repo URL: `https://github.com/<your-user>/<your-repo>`
-3. Track tag: one of the exact tags above
-
-No regex is required when using these stable tags.
+3. Use the above regex in the "Filter" field
 
 ## Required Secrets
 
@@ -90,9 +89,20 @@ During build logs, each app prints:
 
 Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
+## Download Flow
+
+The workflow requires manual download URLs in `patches.json`. You must provide APKMirror (or similar) download URLs for each app version you want to build.
+
+The workflow:
+1. Checks Morphe for the latest supported version of each app
+2. Looks up the manual URL from `patches.json` for that version (or falls back to `latest_supported`)
+3. Downloads using Playwright with the manual URL
+
+No automated download source - you must provide URLs.
+
 ## APK Selection Logic
 
-- Resolves Morphe-supported versions from patch compatibility and downloads only the latest supported version using Playwright.
+- Resolves Morphe-supported versions from patch compatibility and downloads only the latest supported version.
 - Handles `.apk`, `.xapk`, `.apkm`.
 - For split packages (`.xapk/.apkm/.apks`), tries APKEditor merge first, then falls back to dex-bearing extraction if needed.
 - Prioritizes names containing `arm64-v8a`.
@@ -131,8 +141,7 @@ Workflow updates:
 ## Artifacts And Releases
 
 - Workflow artifact upload includes versioned patched APKs named `<app>-<patches-version>-v<base-version>.apk`.
-- GitHub Releases use stable per-app tags (`youtube`, `ytmusic`, `reddit`) with fixed asset names (`<app>.apk`).
-- Old version-pinned tags and previous naming schemes are cleaned up automatically.
+- GitHub Release is created with tag `vYYYY.MM.DD` containing all APKs.
 
 ## Setup
 
@@ -140,11 +149,9 @@ Full setup steps are in [`SETUP.md`](SETUP.md).
 
 ## Troubleshooting
 
-### Error: `No package downloaded for latest Morphe-supported version`
+### Error: `No manual URL configured`
 
-The workflow downloads only the latest Morphe-supported version. If that version is not downloadable, the build fails (no fallback to older supported versions).
-
-Verify `patches.json` has a manual URL for that app/version under `__morphe.download_urls`.
+The workflow requires manual download URLs. Add them to `patches.json` under `__morphe.download_urls`.
 
 ### Error: `Chosen APK has no classes.dex`
 
@@ -158,15 +165,15 @@ Keystore format/password mismatch. Verify:
 2. `KEYSTORE_PASSWORD` is correct
 3. `KEY_PASSWORD` is set if key password differs
 
-### Obtainium 404
+### Obtainium not finding updates
 
-Use exact stable tags (`youtube`, `ytmusic`, `reddit`) instead of regex-based matching.
+Use filename regex filtering as documented in the Release And Obtainium Model section.
 
 ## Thanks
 
 - [Morphe patches](https://github.com/MorpheApp/morphe-patches) for patch definitions and compatibility metadata.
 - [morphe-cli](https://github.com/MorpheApp/morphe-cli) for patching and signing.
-- [Playwright](https://playwright.dev/) for browser-driven APKMirror downloads.
+- [Playwright](https://playwright.dev/) for browser-driven downloads.
 - [APKEditor](https://github.com/REAndroid/APKEditor) for split package merge support.
 - [AntiSplit-M](https://github.com/AbdurazaaqMohammed/AntiSplit-M) for practical split-APK workflow inspiration.
 - [Bouncy Castle](https://www.bouncycastle.org/) for keystore/provider compatibility used in signing conversion.
