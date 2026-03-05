@@ -58,6 +58,7 @@
     "Hide player flyout menu items": true,
     "Hide player overlay buttons": true,
     "Hide related video overlay": true,
+    "Hide related videos": true,
     "Hide timestamp": true,
     "Hide video action buttons": true,
     "Loop video": true,
