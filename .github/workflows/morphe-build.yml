@@ -208,9 +208,20 @@ jobs:
               continue
             fi
 
-            PKG_BLOCK=$(echo "$PATCHES_OUTPUT" | sed -n "/$PKG/,/Compatible packages:/p" | head -n 20)
-
-            LATEST_VERSION=$(echo "$PKG_BLOCK" | grep -A 20 "Compatible versions:" | grep -E "^[0-9]" | head -n 1 | tr -d ' ' || true)
+            # Find the block for this package and extract the first version
+            LATEST_VERSION=$(echo "$PATCHES_OUTPUT" | awk -v pkg="$PKG" '
+              /Compatible packages:/ { in_pkg=0 }
+              $0 ~ pkg { in_pkg=1 }
+              in_pkg && /Compatible versions:/ {
+                getline; getline; getline
+                gsub(/^[ \t]+/, "")
+                gsub(/[ \t]+$/, "")
+                if (/^[0-9]/) {
+                  print
+                  exit
+                }
+              }
+            ' | head -n 1 | tr -d ' ' || true)
 
             if [ -z "$LATEST_VERSION" ]; then
               echo "::warning::Could not determine latest version for $PKG; using existing URL from patches.json."
