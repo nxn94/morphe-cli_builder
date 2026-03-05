@@ -133,6 +133,15 @@ jobs:
         if: steps.version-check.outputs.should-build == 'true'
         run: npm install --no-save playwright
 
+      - name: Cache Playwright browsers
+        if: steps.version-check.outputs.should-build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium-${{ hashFiles('package.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-chromium-
+
       - name: Install Playwright browsers
         if: steps.version-check.outputs.should-build == 'true'
         run: npx playwright install chromium
@@ -155,13 +164,21 @@ jobs:
           echo "::notice::Downloading morphe-patches $PATCHES_VERSION..."
           gh release download "$PATCHES_VERSION" --repo MorpheApp/morphe-patches --pattern "*.mpp" --clobber || true
 
+          # Debug: list downloaded files
+          echo "::debug::Files in current directory:"
+          ls -la *.jar *.mpp 2>/dev/null || echo "No jar/mpp files found"
+
           # Find and rename downloaded files
-          if ls morphe-cli-*.jar 1> /dev/null 2>&1; then
-            mv morphe-cli-*.jar tools/morphe-cli.jar 2>/dev/null || true
-          fi
-          if ls patches-*.mpp 1> /dev/null 2>&1; then
-            mv patches-*.mpp tools/patches.mpp 2>/dev/null || true
-          fi
+          for f in *.jar; do
+            if [ -f "$f" ]; then
+              mv "$f" tools/morphe-cli.jar 2>/dev/null && echo "::notice::Moved $f to tools/morphe-cli.jar"
+            fi
+          done
+          for f in *.mpp; do
+            if [ -f "$f" ]; then
+              mv "$f" tools/patches.mpp 2>/dev/null && echo "::notice::Moved $f to tools/patches.mpp"
+            fi
+          done
 
           if [ -f tools/morphe-cli.jar ] && [ -f tools/patches.mpp ]; then
             CLI_JAR="tools/morphe-cli.jar"
@@ -276,6 +293,14 @@ jobs:
         with:
           path: ~/.npm
           key: ${{ runner.os }}-playwright-npm-${{ env.PLAYWRIGHT_CACHE_VERSION }}
+
+      - name: Cache Playwright browsers (build job)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium-build
+          restore-keys: |
+            playwright-${{ runner.os }}-chromium-
 
       - name: Install jq & Playwright downloader
         id: downloader
