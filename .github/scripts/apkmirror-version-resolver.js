@@ -81,7 +81,14 @@ async function resolveApkUrl(packageId, targetVersion, preferredArch) {
   const baseUrl = "https://www.apkmirror.com";
   const appUrl = `${baseUrl}/apk/${appPath}/`;
   
-  const versionSlug = targetVersion.replace(/\./g, "-");
+  // Convert version to various slug formats (e.g., 20.31.42 -> 20-31-42, 20-31-420, etc.)
+  const versionParts = targetVersion.split(".");
+  const versionSlugBase = versionParts.join("-");
+  const versionSlugs = [
+    versionSlugBase,
+    versionSlugBase + "0", // 20.31.42 -> 20-31-420
+    versionSlugBase.replace(/-(\d+)$/, "-$10"), // Handle trailing zeros
+  ];
   
   const launchOptions = {
     headless: true,
@@ -103,10 +110,22 @@ async function resolveApkUrl(packageId, targetVersion, preferredArch) {
   await page.goto(appUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForTimeout(2000);
   
-  const versionLinkSelector = `a[href*="/${versionSlug}-release/"]`;
-  let versionLink = await page.$(versionLinkSelector);
+  // Try to find the version link using multiple slug variations
+  let versionUrl = "";
   
-  if (!versionLink) {
+  for (const slug of versionSlugs) {
+    const versionLinkSelector = `a[href*="/${slug}-release/"]`;
+    let versionLink = await page.$(versionLinkSelector);
+    
+    if (versionLink) {
+      versionUrl = await versionLink.getAttribute("href");
+      versionUrl = absUrl(versionUrl, baseUrl);
+      if (versionUrl) break;
+    }
+  }
+  
+  // If selector didn't work, try scanning all links on the page
+  if (!versionUrl) {
     const allLinks = await page.evaluate(() => {
       const links = [];
       document.querySelectorAll("a[href]").forEach(a => {
@@ -115,22 +134,46 @@ async function resolveApkUrl(packageId, targetVersion, preferredArch) {
       return links;
     });
     
-    const versionRegex = new RegExp(`/${versionSlug}[-/]`, "i");
-    for (const link of allLinks) {
-      if (versionRegex.test(link)) {
-        const fullUrl = absUrl(link, baseUrl);
-        if (fullUrl.includes("-release/") || fullUrl.includes("/" + versionSlug)) {
-          versionLink = fullUrl;
-          break;
+    // Try each slug variant
+    for (const slug of versionSlugs) {
+      const versionRegex = new RegExp(`/${slug}[-/]`, "i");
+      for (const link of allLinks) {
+        if (versionRegex.test(link)) {
+          const fullUrl = absUrl(link, baseUrl);
+          if (fullUrl && (fullUrl.includes("-release/") || fullUrl.includes("/" + slug))) {
+            versionUrl = fullUrl;
+            break;
+          }
         }
       }
+      if (versionUrl) break;
     }
   }
   
-  let versionUrl = "";
-  if (versionLink) {
-    versionUrl = typeof versionLink === "string" ? versionLink : await versionLink.getAttribute("href");
-    versionUrl = absUrl(versionUrl, baseUrl);
+  // Last resort: try to find any link that contains the version number (with dots or dashes)
+  if (!versionUrl) {
+    const allLinks = await page.evaluate(() => {
+      const links = [];
+      document.querySelectorAll("a[href]").forEach(a => {
+        links.push({ href: a.getAttribute("href"), text: a.textContent });
+      });
+      return links;
+    });
+    
+    const versionWithDots = targetVersion;
+    const versionWithDashes = targetVersion.replace(/\./g, "-");
+    
+    for (const link of allLinks) {
+      const href = link.href || "";
+      const text = link.text || "";
+      // Check both href and text content for the version
+      if ((href.includes(versionWithDots) || href.includes(versionWithDashes) ||
+           text.includes(versionWithDots) || text.includes(versionWithDashes)) &&
+          (href.includes("-release/") || href.includes("/download"))) {
+        versionUrl = absUrl(href, baseUrl);
+        if (versionUrl) break;
+      }
+    }
   }
   
   if (!versionUrl) {

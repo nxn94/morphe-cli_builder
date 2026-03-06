@@ -208,20 +208,39 @@ jobs:
               continue
             fi
 
-            # Find the block for this package and extract the first version
+            # Find all versions for this package and get the latest one
             LATEST_VERSION=$(echo "$PATCHES_OUTPUT" | awk -v pkg="$PKG" '
               /Compatible packages:/ { in_pkg=0 }
               $0 ~ pkg { in_pkg=1 }
               in_pkg && /Compatible versions:/ {
-                getline; getline; getline
-                gsub(/^[ \t]+/, "")
-                gsub(/[ \t]+$/, "")
-                if (/^[0-9]/) {
-                  print
-                  exit
+                while ((getline line) > 0) {
+                  if (line ~ /^[0-9]/) {
+                    gsub(/^[ \t]+/, "", line)
+                    gsub(/[ \t]+$/, "", line)
+                    if (line != "") versions = versions line "\n"
+                  }
+                  if (line ~ /Compatible packages:/) break
                 }
               }
-            ' | head -n 1 | tr -d ' ' || true)
+              END {
+                n = split(versions, arr, "\n")
+                # Sort versions (handles both 20.31.42 and 2025.48.0 formats)
+                for (i = 1; i <= n; i++) {
+                  split(arr[i], v, "\\.")
+                  # Convert version to comparable number
+                  score = 0
+                  for (j = 1; j <= 4; j++) {
+                    part = (j <= length(v)) ? v[j] : 0
+                    score = score * 1000 + part
+                  }
+                  if (score > best_score) {
+                    best_score = score
+                    best_version = arr[i]
+                  }
+                }
+                if (best_version != "") print best_version
+              }
+            ' || true)
 
             if [ -z "$LATEST_VERSION" ]; then
               echo "::warning::Could not determine latest version for $PKG; using existing URL from patches.json."
