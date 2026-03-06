@@ -123,6 +123,29 @@ jobs:
             echo "::notice::No version/channel changes detected. Skipping build."
           fi
 
+      - name: Setup Node.js
+        if: steps.version-check.outputs.should-build == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        if: steps.version-check.outputs.should-build == 'true'
+        run: npm install --no-save playwright
+
+      - name: Cache Playwright browsers
+        if: steps.version-check.outputs.should-build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium-${{ hashFiles('package.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-chromium-
+
+      - name: Install Playwright browsers
+        if: steps.version-check.outputs.should-build == 'true'
+        run: npx playwright install chromium
+
       - name: Resolve latest APK versions from APKMirror
         if: steps.version-check.outputs.should-build == 'true'
         run: |
@@ -284,6 +307,17 @@ jobs:
       - name: Prepare dirs
         run: |
           mkdir -p "$TOOLS_DIR" "$APKS_DIR" "$OUT_DIR"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        run: npm install --no-save playwright
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
 
       - name: Get latest Morphe patches + CLI + APKEditor
         id: morphe
@@ -614,7 +648,34 @@ jobs:
                 ' | sort -nr | cut -d' ' -f2-
           }
 
-          download_with_manual_url() {
+          download_with_playwright() {
+            local url="$1"
+            
+            if [ -z "$url" ]; then
+              echo "::error::Playwright download URL is empty."
+              return 1
+            fi
+            
+            echo "::notice::Downloading APK using Playwright..."
+            
+            # Determine output filename from URL
+            local apk_name="${url##*/}"
+            apk_name="${apk_name%/}"
+            [ -z "$apk_name" ] && apk_name="${APP_ID}.apk"
+            
+            case "${apk_name,,}" in
+              *.apk|*.xapk|*.apkm|*.apks) ;;
+              *) apk_name="${apk_name}.apk" ;;
+            esac
+            
+            local output_file="$APKS_DIR/$apk_name"
+            local meta_file="$APKS_DIR/meta.json"
+            
+            # Run Playwright downloader
+            node .github/scripts/apkmirror-playwright.js "$url" "" "$meta_file" "$output_file"
+          }
+
+          download_with_curl() {
             local url="$1"
             local attempt=1
             local max_attempts=4
@@ -683,9 +744,18 @@ jobs:
           DOWNLOAD_SUCCESS=false
 
           if [ -n "$MANUAL_URL" ]; then
-            echo "::notice::Downloading via manual source URL..."
-            if download_with_manual_url "$MANUAL_URL"; then
+            # Try Playwright first (bypasses Cloudflare)
+            echo "::notice::Downloading via Playwright..."
+            if download_with_playwright "$MANUAL_URL"; then
               DOWNLOAD_SUCCESS=true
+            fi
+            
+            # Fallback to curl if Playwright fails
+            if [ "$DOWNLOAD_SUCCESS" = false ]; then
+              echo "::notice::Playwright download failed, trying curl fallback..."
+              if download_with_curl "$MANUAL_URL"; then
+                DOWNLOAD_SUCCESS=true
+              fi
             fi
           fi
 
