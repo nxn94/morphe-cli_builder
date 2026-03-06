@@ -123,29 +123,6 @@ jobs:
             echo "::notice::No version/channel changes detected. Skipping build."
           fi
 
-      - name: Setup Node.js
-        if: steps.version-check.outputs.should-build == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        if: steps.version-check.outputs.should-build == 'true'
-        run: npm install --no-save playwright
-
-      - name: Cache Playwright browsers
-        if: steps.version-check.outputs.should-build == 'true'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-chromium-${{ hashFiles('package.json') }}
-          restore-keys: |
-            playwright-${{ runner.os }}-chromium-
-
-      - name: Install Playwright browsers
-        if: steps.version-check.outputs.should-build == 'true'
-        run: npx playwright install chromium
-
       - name: Resolve latest APK versions from APKMirror
         if: steps.version-check.outputs.should-build == 'true'
         run: |
@@ -268,7 +245,6 @@ jobs:
       TOOLS_DIR: tools
       APKS_DIR: apps
       OUT_DIR: out
-      PLAYWRIGHT_CACHE_VERSION: "1"
       PATCHES_VERSION: ${{ needs.check-versions.outputs.patches-version }}
       CLI_VERSION: ${{ needs.check-versions.outputs.cli-version }}
       PATCHES_BRANCH: ${{ needs.check-versions.outputs.patches-branch }}
@@ -284,62 +260,26 @@ jobs:
           distribution: temurin
           java-version: "17" # any current LTS JRE is fine to run the CLI [9](https://aur.archlinux.org/packages/morphe-cli)
 
-      - name: Set up Node.js (for Playwright downloader)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Restore npm cache (Playwright downloader)
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-playwright-npm-${{ env.PLAYWRIGHT_CACHE_VERSION }}
-
-      - name: Cache Playwright browsers (build job)
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-chromium-build
-          restore-keys: |
-            playwright-${{ runner.os }}-chromium-
-
-      - name: Install jq & Playwright downloader
-        id: downloader
+      - name: Install dependencies
+        id: deps
         run: |
           set -euo pipefail
           
-          echo "::notice::Installing dependencies..."
+          echo "::notice::Installing system dependencies..."
           sudo apt-get update -y
           sudo apt-get install -y jq curl unzip libbcprov-java
           
-          # Verify installation
-          if ! command -v npm &> /dev/null; then
-            echo "::error::npm is not available"
+          # Verify curl and jq are available
+          if ! command -v curl &> /dev/null; then
+            echo "::error::curl is not available"
             exit 1
           fi
-
-          npm install --no-save --no-package-lock playwright
-          npx playwright install --with-deps chromium
-          if [ ! -f ".github/scripts/apkmirror-playwright.js" ]; then
-            echo "::error::Playwright downloader script is missing: .github/scripts/apkmirror-playwright.js"
+          if ! command -v jq &> /dev/null; then
+            echo "::error::jq is not available"
             exit 1
           fi
-          node --check .github/scripts/apkmirror-playwright.js
-
-          PLAYWRIGHT_BROWSER_BIN="$(
-            command -v google-chrome \
-              || command -v google-chrome-stable \
-              || command -v chromium \
-              || command -v chromium-browser \
-              || true
-          )"
-          if [ -n "$PLAYWRIGHT_BROWSER_BIN" ]; then
-            echo "::notice::Detected browser for Playwright downloader: $PLAYWRIGHT_BROWSER_BIN"
-          else
-            echo "::warning::No browser binary detected for Playwright downloader (google-chrome/chromium)."
-          fi
-
-          echo "browser=$PLAYWRIGHT_BROWSER_BIN" >> "$GITHUB_OUTPUT"
+          
+          echo "::notice::Dependencies installed successfully"
 
       - name: Prepare dirs
         run: |
@@ -551,7 +491,6 @@ jobs:
           TARGET_VERSION="${{ steps.targetver.outputs.version }}"
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
           APKEDITOR_JAR="${{ steps.morphe.outputs.apkeditor_jar }}"
-          PLAYWRIGHT_BROWSER_BIN="${{ steps.downloader.outputs.browser }}"
           
           # Create output directory if it doesn't exist
           mkdir -p "$APKS_DIR"
@@ -677,81 +616,62 @@ jobs:
 
           download_with_manual_url() {
             local url="$1"
-
-            download_with_playwright() {
-              local source_url="$1"
-              local meta_file="$RUNNER_TEMP/apkmirror_pw_meta_${{ matrix.name }}.json"
-              local bin_file="$RUNNER_TEMP/apkmirror_pw_bin_${{ matrix.name }}"
-              local pw_name=""
-              local pw_ext=""
-              local attempt=1
-              local max_attempts=4
-
-              rm -f "$meta_file" "$bin_file"
-              while [ "$attempt" -le "$max_attempts" ]; do
-                echo "::notice::Playwright download attempt ${attempt}/${max_attempts}"
-                if node .github/scripts/apkmirror-playwright.js \
-                  "$source_url" \
-                  "$PLAYWRIGHT_BROWSER_BIN" \
-                  "$meta_file" \
-                  "$bin_file"; then
-                  break
-                fi
-
-                if [ "$attempt" -ge "$max_attempts" ]; then
-                  echo "::warning::Playwright download failed after ${max_attempts} attempts."
-                  return 1
-                fi
-
-                # Backoff helps when APKMirror/Cloudflare throttles automated traffic.
-                sleep $((attempt * 15))
-                rm -f "$meta_file" "$bin_file"
-                attempt=$((attempt + 1))
-              done
-
-              if [ ! -s "$bin_file" ]; then
-                echo "::warning::Playwright downloader did not produce an APK payload."
-                return 1
-              fi
-
-              pw_name="$(jq -r '.filename // empty' "$meta_file" 2>/dev/null || true)"
-              echo "::notice::Playwright meta: $(jq -c '{via, direct_url, filename, bytes, content_type}' "$meta_file" 2>/dev/null || cat "$meta_file" || true)"
-              if [ -z "$pw_name" ]; then
-                pw_name="${APP_ID}.apk"
-              fi
-
-              pw_ext="${pw_name##*.}"
-              case "${pw_ext,,}" in
-                apk|xapk|apkm|apks) ;;
-                *) pw_name="${APP_ID}.apk" ;;
-              esac
-
-              mv -f "$bin_file" "$APKS_DIR/$pw_name"
-              echo "::notice::Playwright download saved: $APKS_DIR/$pw_name"
-              return 0
-            }
+            local attempt=1
+            local max_attempts=4
 
             if [ -z "$url" ]; then
               echo "::error::Manual APKMirror URL is empty."
               return 1
             fi
 
-            echo "::notice::Using manual APK source URL for ${APP_ID}: $url"
-            case "${url,,}" in
-              *.apk|*.xapk|*.apkm|*.apks)
-                local direct_name="${url##*/}"
-                [ -z "$direct_name" ] && direct_name="${APP_ID}.apk"
-                echo "::notice::Manual URL points to a direct package file; downloading with curl."
-                if curl -fL --retry 4 --retry-delay 5 --connect-timeout 30 \
-                  -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36" \
-                  -o "$APKS_DIR/$direct_name" "$url"; then
-                  echo "::notice::Direct download saved: $APKS_DIR/$direct_name"
+            echo "::notice::Using APK source URL for ${APP_ID}: $url"
+            
+            # Determine output filename from URL
+            local apk_name="${url##*/}"
+            # Remove trailing slash and clean up
+            apk_name="${apk_name%/}"
+            [ -z "$apk_name" ] && apk_name="${APP_ID}.apk"
+            
+            # Ensure .apk extension
+            case "${apk_name,,}" in
+              *.apk|*.xapk|*.apkm|*.apks) ;;
+              *) apk_name="${apk_name}.apk" ;;
+            esac
+
+            local output_file="$APKS_DIR/$apk_name"
+
+            # Download with curl, following redirects
+            while [ "$attempt" -le "$max_attempts" ]; do
+              echo "::notice::Download attempt ${attempt}/${max_attempts}..."
+              
+              if curl -fL --retry 4 --retry-delay 5 --connect-timeout 30 \
+                -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36" \
+                -H "Accept: */*" \
+                -H "Accept-Language: en-US,en;q=0.9" \
+                -H "Referer: https://www.apkmirror.com/" \
+                -o "$output_file" \
+                "$url"; then
+                
+                # Check if we got a valid file (not an error page)
+                if [ -s "$output_file" ] && [ "$(stat -c%s "$output_file" 2>/dev/null || echo 0)" -gt 1000 ]; then
+                  echo "::notice::Download saved: $output_file"
                   return 0
                 fi
-                echo "::warning::Direct file download failed; falling back to Playwright flow."
-                ;;
-            esac
-            download_with_playwright "$url"
+              fi
+              
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "::warning::Download failed after ${max_attempts} attempts."
+                rm -f "$output_file"
+                return 1
+              fi
+              
+              echo "::warning::Download attempt ${attempt} failed, retrying..."
+              sleep $((attempt * 10))
+              rm -f "$output_file"
+              attempt=$((attempt + 1))
+            done
+            
+            return 1
           }
 
           APK_CANDIDATE=""
