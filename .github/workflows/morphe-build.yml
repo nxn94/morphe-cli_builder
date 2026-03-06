@@ -543,7 +543,7 @@ jobs:
           if [ -n "$TARGET_VERSION" ]; then
             echo "version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
             echo "versions=$TARGET_VERSIONS" >> "$GITHUB_OUTPUT"
-            echo "::notice::Selected Morphe-recommended version for ${{ matrix.appId }}: $TARGET_VERSION"
+            echo "Selected version for ${{ matrix.appId }}: $TARGET_VERSION (URL resolved in check-versions)"
           else
             echo "version=" >> "$GITHUB_OUTPUT"
             echo "versions=" >> "$GITHUB_OUTPUT"
