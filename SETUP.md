@@ -95,9 +95,15 @@ Example `patches.json` structure:
 ```
 
 URL resolution order (at build time):
-1. Automatic: Query morphe-cli for latest supported version, then resolve APKMirror URL
+1. Automatic: Query morphe-cli for latest supported version, then resolve APKMirror URL via curl
 2. Manual fallback: `__morphe.download_urls.<appId>.<target_version>`
 3. Manual fallback: `__morphe.download_urls.<appId>.latest_supported`
+
+The automatic resolver:
+- Queries morphe-cli for the latest supported version
+- Constructs the APKMirror version page URL
+- Probes variant numbers (1-15) using curl until a working URL is found
+- This approach bypasses Cloudflare protection that Playwright struggles with
 
 ## 5. Run The Workflow
 

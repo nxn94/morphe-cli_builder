@@ -2,7 +2,7 @@
 
 > **Warning:** This project is vibecoded and a work in progress. Expect bugs, breaking changes, and incomplete documentation.
 
-Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches), [morphe-cli](https://github.com/MorpheApp/morphe-cli), [Playwright](https://playwright.dev/), and [APKEditor](https://github.com/REAndroid/APKEditor).
+Automated GitHub Actions pipeline for building patched Android APKs with [Morphe patches](https://github.com/MorpheApp/morphe-patches), [morphe-cli](https://github.com/MorpheApp/morphe-cli), and [APKEditor](https://github.com/REAndroid/APKEditor).
 
 ## Supported Apps
 
@@ -106,20 +106,16 @@ Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
 The workflow automatically resolves APK download URLs at build time:
 
-1. Uses `morphe-cli list-patches` to find the latest Morphe-supported version for each app
-2. Uses Playwright to navigate APKMirror and find the download URL for that version
-3. Prefers architecture: `preferred_arch` (default: `arm64-v8a`)
-4. Prefers DPI: `nodpi` > higher single DPI values > DPI ranges
-5. Falls back to manual URLs in `patches.json` if automatic resolution fails
+1. Uses `morphe-cli list-versions` to find the latest Morphe-supported version for each app
+2. Constructs the APKMirror URL directly using the predictable URL format
+3. Uses curl to probe for the correct variant number (APKMirror variants are numbered -1, -2, etc.)
+4. Falls back to manual URLs in `patches.json` if automatic resolution fails
 
-The resolved URLs are committed to `patches.json` before the build starts.
+The resolved URLs are stored in `patches.json` as they're used.
 
-The workflow:
-1. Checks Morphe for the latest supported version of each app
-2. Looks up the manual URL from `patches.json` for that version (or falls back to `latest_supported`)
-3. Downloads using Playwright with the manual URL
-
-No automated download source - you must provide URLs.
+APKMirror URL format:
+- Version page: `https://www.apkmirror.com/apk/{developer}/{app}/{app}-{version}-release/`
+- Download: `https://www.apkmirror.com/apk/{developer}/{app}/{app}-{version}-{variant}-android-apk-download/`
 
 ## APK Selection Logic
 
@@ -157,7 +153,8 @@ Workflow updates:
 
 ## Performance Notes
 
-- npm cache (`~/.npm`) is used to speed up Playwright dependency installation.
+- Uses curl for URL resolution (lightweight, no browser overhead).
+- npm cache (`~/.npm`) is used for any remaining npm dependencies.
 
 ## Artifacts And Releases
 
@@ -194,7 +191,6 @@ Use filename regex filtering as documented in the Release And Obtainium Model se
 
 - [Morphe patches](https://github.com/MorpheApp/morphe-patches) for patch definitions and compatibility metadata.
 - [morphe-cli](https://github.com/MorpheApp/morphe-cli) for patching and signing.
-- [Playwright](https://playwright.dev/) for browser-driven downloads.
 - [APKEditor](https://github.com/REAndroid/APKEditor) for split package merge support.
 - [AntiSplit-M](https://github.com/AbdurazaaqMohammed/AntiSplit-M) for practical split-APK workflow inspiration.
 - [Bouncy Castle](https://www.bouncycastle.org/) for keystore/provider compatibility used in signing conversion.
