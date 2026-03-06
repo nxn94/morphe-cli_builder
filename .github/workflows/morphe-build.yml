@@ -201,46 +201,17 @@ jobs:
           for PKG in $(echo "$PKGS" | jq -r '.[]'); do
             echo "::notice::Finding latest supported version for $PKG..."
 
-            PATCHES_OUTPUT=$(java -jar "$CLI_JAR" list-patches --patches "$PATCHES_FILE" --with-packages --with-versions 2>/dev/null) || true
+            # Use morphe-cli's built-in list-versions command to get compatible versions
+            VERSIONS_OUTPUT=$(java -jar "$CLI_JAR" list-versions "$PATCHES_FILE" -f "$PKG" 2>/dev/null) || true
 
-            if [ -z "$PATCHES_OUTPUT" ]; then
-              echo "::warning::Could not get patches list for $PKG; using existing URL from patches.json."
+            if [ -z "$VERSIONS_OUTPUT" ]; then
+              echo "::warning::Could not get versions list for $PKG; using existing URL from patches.json."
               continue
             fi
 
-            # Find all versions for this package and get the latest one
-            LATEST_VERSION=$(echo "$PATCHES_OUTPUT" | awk -v pkg="$PKG" '
-              /Compatible packages:/ { in_pkg=0 }
-              $0 ~ pkg { in_pkg=1 }
-              in_pkg && /Compatible versions:/ {
-                while ((getline line) > 0) {
-                  if (line ~ /^[0-9]/) {
-                    gsub(/^[ \t]+/, "", line)
-                    gsub(/[ \t]+$/, "", line)
-                    if (line != "") versions = versions line "\n"
-                  }
-                  if (line ~ /Compatible packages:/) break
-                }
-              }
-              END {
-                n = split(versions, arr, "\n")
-                # Sort versions (handles both 20.31.42 and 2025.48.0 formats)
-                for (i = 1; i <= n; i++) {
-                  split(arr[i], v, "\\.")
-                  # Convert version to comparable number
-                  score = 0
-                  for (j = 1; j <= 4; j++) {
-                    part = (j <= length(v)) ? v[j] : 0
-                    score = score * 1000 + part
-                  }
-                  if (score > best_score) {
-                    best_score = score
-                    best_version = arr[i]
-                  }
-                }
-                if (best_version != "") print best_version
-              }
-            ' || true)
+            # Extract the first version from the output (most common = first listed)
+            # Format: "20.44.38 (63 patches)" or "	20.44.38 (63 patches)"
+            LATEST_VERSION=$(echo "$VERSIONS_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
 
             if [ -z "$LATEST_VERSION" ]; then
               echo "::warning::Could not determine latest version for $PKG; using existing URL from patches.json."
