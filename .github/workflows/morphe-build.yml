@@ -238,7 +238,7 @@ jobs:
             
             APKKEPT_SUCCESS=false
             if command -v apkeep &>/dev/null; then
-              if apkeep -a "$PKG" -v "$LATEST_VERSION" -d apk-pure -o "$APK_TEMP_DIR" 2>&1; then
+              if apkeep -a "$PKG@$LATEST_VERSION" -d apk-pure -o "$APK_TEMP_DIR" 2>&1; then
                 # Check if we got a valid APK file
                 APK_FILE=$(find "$APK_TEMP_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1)
                 if [ -n "$APK_FILE" ] && [ -f "$APK_FILE" ]; then
