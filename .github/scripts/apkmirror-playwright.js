@@ -2,42 +2,60 @@
 
 /**
  * APKMirror Downloader using Playwright
- * Downloads APK files from APKMirror using Playwright to bypass Cloudflare
+ * Uses Playwright's built-in download handling to get the APK
  */
 
 const { chromium } = require("playwright");
 const fs = require("node:fs");
-const path = require("node:path");
 
 const args = process.argv.slice(2);
 if (args.length < 4) {
   console.error("Usage: apkmirror-playwright.js <download_url> <browser_path> <meta_file> <output_file>");
-  console.error("Example: apkmirror-playwright.js https://www.apkmirror.com/apk/... /usr/bin/chromium meta.json output.apk");
   process.exit(2);
 }
 
 const [downloadUrl, browserPath, metaFile, outputFile] = args;
 
-// User agent for Playwright
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 async function waitForCloudflare(page, timeout = 30000) {
-  console.error("Waiting for Cloudflare to pass...");
-  
   const startTime = Date.now();
   while (Date.now() - startTime < timeout) {
     const title = await page.title();
-    
-    // Check if we're past Cloudflare
     if (!title.includes("Just a moment") && !title.includes("cloudflare") && !title.includes("Checking your browser")) {
-      await page.waitForTimeout(3000);
-      console.error("Cloudflare challenge passed");
+      await page.waitForTimeout(2000);
       return true;
     }
-    
-    console.error(`Still on Cloudflare page: ${title}`);
     await page.waitForTimeout(2000);
   }
+  return false;
+}
+
+async function dismissConsentPopup(page) {
+  const selectors = [
+    '#qc-cmp2-container button[mode="primary"]',
+    '#qc-cmp2-container button:has-text("Accept")',
+    '#qc-cmp2-container button:has-text("I Agree")',
+    'button:has-text("Accept All")',
+    'button:has-text("Agree")'
+  ];
+  
+  for (const selector of selectors) {
+    try {
+      const btn = await page.$(selector);
+      if (btn) {
+        console.error(`Dismissing consent popup with: ${selector}`);
+        await btn.click();
+        await page.waitForTimeout(1000);
+        return true;
+      }
+    } catch (e) {}
+  }
+  
+  try {
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(500);
+  } catch (e) {}
   
   return false;
 }
@@ -45,7 +63,6 @@ async function waitForCloudflare(page, timeout = 30000) {
 async function downloadWithPlaywright(url, browserPath) {
   console.error(`Downloading APK from: ${url}`);
   
-  // Launch browser with stealth settings
   const browserOptions = {
     headless: true,
     args: [
@@ -54,12 +71,7 @@ async function downloadWithPlaywright(url, browserPath) {
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--disable-web-security',
-      '--disable-features=IsolateOrigins,site-per-process',
-      '--allow-running-insecure-content',
-      '--ignore-certificate-errors',
-      '--ignore-ssl-errors',
-      '--ignore-certificate-errors-spki-list'
+      '--disable-web-security'
     ]
   };
   
@@ -69,165 +81,94 @@ async function downloadWithPlaywright(url, browserPath) {
   
   const browser = await chromium.launch(browserOptions);
   
-  // Create context with stealth settings
   const context = await browser.newContext({
     userAgent: UA,
     viewport: { width: 1920, height: 1080 },
     locale: 'en-US',
-    timezoneId: 'America/New_York',
-    permissions: [],
-    extraHTTPHeaders: {
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    }
+    timezoneId: 'America/New_York'
   });
   
-  // Add stealth script to hide automation
   await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', {
-      get: () => undefined,
-    });
-    
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => [1, 2, 3, 4, 5],
-    });
-    
-    Object.defineProperty(navigator, 'languages', {
-      get: () => ['en-US', 'en'],
-    });
-    
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
     window.chrome = { runtime: {} };
   });
   
   const page = await context.newPage();
   
-  // Enable console logging from the page
-  page.on('console', msg => {
-    if (msg.type() === 'error') {
-      console.error(`Page error: ${msg.text()}`);
-    }
-  });
+  // Set up download handler BEFORE navigating
+  const downloadPromise = context.waitForEvent('download', { timeout: 60000 });
   
   try {
     console.error(`Navigating to: ${url}`);
     
-    // Navigate to the download page
-    const response = await page.goto(url, { 
-      timeout: 90000,
-      waitUntil: 'domcontentloaded'
-    });
+    await page.goto(url, { timeout: 60000, waitUntil: 'domcontentloaded' });
+    await waitForCloudflare(page, 30000);
     
-    console.error(`Initial response status: ${response?.status()}`);
-    
-    // Wait for Cloudflare challenge
-    await waitForCloudflare(page, 60000);
+    // Dismiss consent popup
+    await dismissConsentPopup(page);
     
     const pageTitle = await page.title();
     console.error(`Page title: ${pageTitle}`);
     
-    if (pageTitle.includes('Just a moment')) {
-      throw new Error("Cloudflare challenge failed");
-    }
+    // Find and click download button
+    const downloadButtonSelectors = [
+      'a.downloadButton',
+      'a[class*="downloadButton"]', 
+      'a.btn.btn-flat.downloadButton',
+      'a:has-text("Download APK")'
+    ];
     
     let downloadStarted = false;
-    let finalUrl = url;
     let filename = "app.apk";
     
-    // Check if we're on a redirect page with download button
-    const downloadButtonSelectors = [
-      'a.btn.btn-flat.download-btn',
-      'a[data-track="Download"]', 
-      'a.download-button',
-      'a[class*="download"]',
-      'a[href*="download"]'
-    ];
-    
     for (const selector of downloadButtonSelectors) {
-      const downloadButton = await page.$(selector);
-      if (downloadButton) {
-        console.error(`Found download button with selector: ${selector}, clicking...`);
-        await downloadButton.click();
-        
-        // Wait for redirect
-        await page.waitForTimeout(5000);
-        finalUrl = page.url();
-        console.error(`Redirected to: ${finalUrl}`);
-        break;
-      }
-    }
-    
-    // Try to find the actual APK download link
-    const apkLinkSelectors = [
-      'a[href*="android-apkdownload"]',
-      'a[href$=".apk"]',
-      'a[class*="download"]'
-    ];
-    
-    for (const selector of apkLinkSelectors) {
-      const apkLink = await page.$(selector);
-      if (apkLink) {
-        const href = await apkLink.getAttribute('href');
-        if (href && (href.startsWith('http') || href.includes('apk'))) {
-          finalUrl = href.startsWith('http') ? href : new URL(href, url).href;
-          console.error(`Found direct APK link: ${finalUrl}`);
-          break;
-        }
-      }
-    }
-    
-    // Extract filename from URL or page
-    try {
-      const urlParts = finalUrl.split('/');
-      for (let i = urlParts.length - 1; i >= 0; i--) {
-        if (urlParts[i] && urlParts[i].includes('.apk')) {
-          filename = urlParts[i];
-          break;
-        }
-      }
-    } catch (e) {
-      console.error(`Could not extract filename: ${e.message}`);
-    }
-    
-    // If we have a direct URL, try to download it
-    if (finalUrl && (finalUrl.includes('.apk') || finalUrl.includes('download'))) {
       try {
-        console.error(`Attempting to download from: ${finalUrl}`);
-        
-        const downloadResponse = await page.request.get(finalUrl, { 
-          timeout: 120000,
-          headers: {
-            'User-Agent': UA,
-            'Accept': '*/*',
-            'Referer': url
+        const downloadButton = await page.$(selector);
+        if (downloadButton) {
+          console.error(`Found download button with selector: ${selector}, clicking...`);
+          
+          // Click the button to trigger download
+          const download = await downloadButton.click();
+          
+          try {
+            const downloadObj = await downloadPromise;
+            console.error(`Download started, filename: ${downloadObj.suggestedFilename()}`);
+            filename = downloadObj.suggestedFilename() || filename;
+            
+            // Wait for download to complete
+            await downloadObj.path();
+            const downloadedPath = await downloadObj.path();
+            
+            // Copy to output file
+            if (downloadedPath) {
+              fs.copyFileSync(downloadedPath, outputFile);
+              console.error(`Downloaded to: ${outputFile}`);
+              downloadStarted = true;
+              break;
+            }
+          } catch (e) {
+            console.error(`Download wait failed: ${e.message}`);
           }
-        });
-        
-        if (downloadResponse.ok()) {
-          const buffer = await downloadResponse.body();
-          fs.writeFileSync(outputFile, buffer);
-          console.error(`Downloaded ${buffer.length} bytes to ${outputFile}`);
-          downloadStarted = true;
-        } else {
-          console.error(`Download failed with status: ${downloadResponse.status()}`);
         }
       } catch (e) {
-        console.error(`Direct download failed: ${e.message}`);
+        console.error(`Selector ${selector} failed: ${e.message}`);
       }
     }
     
     // Write metadata
     const meta = {
       url: url,
-      final_url: finalUrl,
       filename: filename,
       downloaded: downloadStarted,
-      via: "playwright-stealth"
+      via: "playwright-download-event"
     };
     
     fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
     
     if (!downloadStarted) {
-      throw new Error("Failed to download APK - Cloudflare may be blocking requests");
+      throw new Error("Failed to download APK via Playwright download event");
     }
     
     return { success: true, filename, path: outputFile };
@@ -243,7 +184,6 @@ downloadWithPlaywright(downloadUrl, browserPath)
   })
   .catch(err => {
     console.error(`Download failed: ${err.message}`);
-    // Write error metadata
     fs.writeFileSync(metaFile, JSON.stringify({ error: err.message, downloaded: false }, null, 2));
     process.exit(1);
   });

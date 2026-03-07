@@ -146,6 +146,13 @@ jobs:
         if: steps.version-check.outputs.should-build == 'true'
         run: npx playwright install chromium
 
+      - name: Install apkeep
+        if: steps.version-check.outputs.should-build == 'true'
+        run: |
+          # Install apkeep for downloading APKs from APKPure
+          curl -sSL https://raw.githubusercontent.com/EFForg/apkeep/main/apkeep-install.sh | bash -s -- -d /usr/local/bin
+          apkeep --version
+
       - name: Resolve latest APK versions from APKMirror
         if: steps.version-check.outputs.should-build == 'true'
         run: |
@@ -220,24 +227,63 @@ jobs:
 
             echo "::notice::Latest supported version for $PKG: $LATEST_VERSION"
 
-            BROWSER_BIN=$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)
-
-            if [ -n "$BROWSER_BIN" ]; then
-              echo "::notice::Resolving APKMirror URL for $PKG $LATEST_VERSION..."
-              RESULT=$(node .github/scripts/apkmirror-version-resolver.js "$PKG" "$LATEST_VERSION" "$PREFERRED_ARCH" "$BROWSER_BIN" 2>&1) || true
-
-              if echo "$RESULT" | jq -e '.download_url' >/dev/null 2>&1; then
-                DOWNLOAD_URL=$(echo "$RESULT" | jq -r '.download_url')
-                echo "::notice::Resolved URL for $PKG $LATEST_VERSION: $DOWNLOAD_URL"
-
-                jq --arg pkg "$PKG" --arg ver "$LATEST_VERSION" --arg url "$DOWNLOAD_URL" \
-                  '.__morphe.download_urls[$pkg][$ver] = $url | .__morphe.download_urls[$pkg]["latest_supported"] = $url' \
+            # First, try to download with apkeep (APKPure source)
+            echo "::notice::Trying apkeep download for $PKG $LATEST_VERSION..."
+            
+            APK_TEMP_DIR="$RUNNER_TEMP/apkkeep_$PKG"
+            mkdir -p "$APK_TEMP_DIR"
+            
+            APKKEPT_SUCCESS=false
+            if command -v apkeep &>/dev/null; then
+              if apkeep -a "$PKG" -v "$LATEST_VERSION" -d apk-pure -o "$APK_TEMP_DIR" 2>&1; then
+                # Check if we got a valid APK file
+                APK_FILE=$(find "$APK_TEMP_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1)
+                if [ -n "$APK_FILE" ] && [ -f "$APK_FILE" ]; then
+                  echo "::notice::apkeep successfully downloaded $PKG $LATEST_VERSION"
+                  APKKEPT_SUCCESS=true
+                  
+                  # Move to tools directory for build job to use
+                  cp "$APK_FILE" tools/ 2>/dev/null || true
+                fi
+              fi
+            fi
+            
+            if [ "$APKKEPT_SUCCESS" = true ]; then
+              echo "::notice::Downloaded $PKG $LATEST_VERSION via apkeep (APKPure)"
+              # Mark that we have a local APK available - build job will use it
+            else
+              echo "::notice::apkeep failed for $PKG $LATEST_VERSION, falling back to APKMirror URL..."
+              
+              # Fall back to URL from patches.json
+              FALLBACK_URL="$(jq -r --arg pkg "$PKG" '.__morphe?.download_urls?[$pkg]?.["latest_supported"] // empty' patches.json 2>/dev/null || true)"
+              
+              if [ -n "$FALLBACK_URL" ]; then
+                echo "::notice::Using fallback URL for $PKG: $FALLBACK_URL"
+                jq --arg pkg "$PKG" --arg url "$FALLBACK_URL" \
+                  '.__morphe.download_urls[$pkg]["latest_supported"] = $url' \
                   patches.json > patches.json.tmp && mv patches.json.tmp patches.json
               else
-                echo "::warning::Failed to resolve URL for $PKG: $RESULT"
+                # Try browser-based resolution as last resort
+                BROWSER_BIN=$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)
+
+                if [ -n "$BROWSER_BIN" ]; then
+                  echo "::notice::Resolving APKMirror URL for $PKG $LATEST_VERSION..."
+                  RESULT=$(node .github/scripts/apkmirror-version-resolver.js "$PKG" "$LATEST_VERSION" "$PREFERRED_ARCH" "$BROWSER_BIN" 2>&1) || true
+
+                  if echo "$RESULT" | jq -e '.download_url' >/dev/null 2>&1; then
+                    DOWNLOAD_URL=$(echo "$RESULT" | jq -r '.download_url')
+                    echo "::notice::Resolved URL for $PKG $LATEST_VERSION: $DOWNLOAD_URL"
+
+                    jq --arg pkg "$PKG" --arg url "$DOWNLOAD_URL" \
+                      '.__morphe.download_urls[$pkg]["latest_supported"] = $url' \
+                      patches.json > patches.json.tmp && mv patches.json.tmp patches.json
+                  else
+                    echo "::warning::Failed to resolve URL for $PKG: $RESULT"
+                  fi
+                else
+                  echo "::warning::No browser found; cannot resolve APKMirror URLs automatically."
+                fi
               fi
-            else
-              echo "::warning::No browser found; cannot resolve APKMirror URLs automatically."
             fi
           done
 
@@ -245,6 +291,14 @@ jobs:
           git config user.email "actions@github.com"
           git add patches.json
           git diff --cached --quiet || git commit -m "chore: auto-resolve APK download URLs - patches $PATCHES_VERSION, cli $CLI_VERSION"
+
+      - name: Upload downloaded APKs
+        if: steps.version-check.outputs.should-build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-downloaded-apks
+          path: tools/*.apk tools/*.xapk tools/*.apkm tools/*.apks 2>/dev/null || true
+          retention-days: 1
 
   build:
     needs: check-versions
@@ -307,6 +361,13 @@ jobs:
       - name: Prepare dirs
         run: |
           mkdir -p "$TOOLS_DIR" "$APKS_DIR" "$OUT_DIR"
+
+      - name: Download pre-downloaded APKs from check-versions
+        uses: actions/download-artifact@v4
+        with:
+          name: pre-downloaded-apks
+          path: "${{ env.TOOLS_DIR }}"
+        continue-on-error: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -530,12 +591,11 @@ jobs:
           mkdir -p "$APKS_DIR"
           rm -f "$APKS_DIR"/* || true
 
-          # Manual source URL override (required, per app/per version).
+          # Manual source URL override (fallback).
           # patches.json shape:
           # "__morphe": {
           #   "download_urls": {
           #     "com.google.android.youtube": {
-          #       "20.40.45": "https://www.apkmirror.com/apk/.../android-apk-download/",
           #       "latest_supported": "https://www.apkmirror.com/apk/.../android-apk-download/"
           #     }
           #   }
@@ -543,10 +603,8 @@ jobs:
           MANUAL_URL="$(
             jq -r \
               --arg pkg "$APP_ID" \
-              --arg ver "$TARGET_VERSION" \
               '
-                .["__morphe"]?.download_urls?[$pkg]?[$ver]
-                // .["__morphe"]?.download_urls?[$pkg]?["latest_supported"]
+                .["__morphe"]?.download_urls?[$pkg]?["latest_supported"]
                 // empty
               ' patches.json 2>/dev/null || true
           )"
@@ -743,7 +801,18 @@ jobs:
 
           DOWNLOAD_SUCCESS=false
 
-          if [ -n "$MANUAL_URL" ]; then
+          # First, check if we have a pre-downloaded APK from check-versions job
+          PRELOADED_APK=""
+          for ext in apk xapk apkm apks; do
+            PRELOADED_APK=$(find "$TOOLS_DIR" -type f -name "*.$ext" -printf '%p\n' 2>/dev/null | head -n1 || true)
+            [ -n "$PRELOADED_APK" ] && break
+          done
+          
+          if [ -n "$PRELOADED_APK" ] && [ -f "$PRELOADED_APK" ]; then
+            echo "::notice::Using pre-downloaded APK from check-versions: $PRELOADED_APK"
+            cp "$PRELOADED_APK" "$APKS_DIR/"
+            DOWNLOAD_SUCCESS=true
+          elif [ -n "$MANUAL_URL" ]; then
             # Try Playwright first (bypasses Cloudflare)
             echo "::notice::Downloading via Playwright..."
             if download_with_playwright "$MANUAL_URL"; then
