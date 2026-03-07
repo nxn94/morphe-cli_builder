@@ -150,7 +150,10 @@ jobs:
         if: steps.version-check.outputs.should-build == 'true'
         run: |
           # Install apkeep for downloading APKs from APKPure
-          curl -sSL https://raw.githubusercontent.com/EFForg/apkeep/main/apkeep-install.sh | bash -s -- -d /usr/local/bin
+          APKEEP_VERSION="0.18.0"
+          APKEEP_URL="https://github.com/EFForg/apkeep/releases/download/${APKEEP_VERSION}/apkeep-x86_64-unknown-linux-gnu"
+          curl -sSL "$APKEEP_URL" -o /usr/local/bin/apkeep
+          chmod +x /usr/local/bin/apkeep
           apkeep --version
 
       - name: Resolve latest APK versions from APKMirror
