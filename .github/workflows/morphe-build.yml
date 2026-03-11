@@ -238,14 +238,29 @@ jobs:
             
             APKKEPT_SUCCESS=false
             if command -v apkeep &>/dev/null; then
-              if apkeep -a "$PKG@$LATEST_VERSION" -d apk-pure -o "$APK_TEMP_DIR" 2>&1; then
-                # Check if we got a valid APK file
+              # Try with @ syntax first
+              echo "::notice::Trying apkeep with @ syntax for $PKG@$LATEST_VERSION..."
+              APKEEP_OUTPUT=$(apkeep -a "${PKG}@${LATEST_VERSION}" -d apk-pure -o "$APK_TEMP_DIR" 2>&1) || true
+              echo "::debug::apkeep output: $APKEEP_OUTPUT"
+
+              # Check if we got a valid APK file
+              APK_FILE=$(find "$APK_TEMP_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1)
+              if [ -n "$APK_FILE" ] && [ -f "$APK_FILE" ]; then
+                echo "::notice::apkeep successfully downloaded $PKG $LATEST_VERSION"
+                APKKEPT_SUCCESS=true
+
+                # Move to tools directory for build job to use
+                cp "$APK_FILE" tools/ 2>/dev/null || true
+              else
+                # Try without version to get latest available
+                echo "::notice::Version-specific download failed, trying latest version..."
+                APKEEP_OUTPUT=$(apkeep -a "$PKG" -d apk-pure -o "$APK_TEMP_DIR" 2>&1) || true
+                echo "::debug::apkeep latest output: $APKEEP_OUTPUT"
+
                 APK_FILE=$(find "$APK_TEMP_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1)
                 if [ -n "$APK_FILE" ] && [ -f "$APK_FILE" ]; then
-                  echo "::notice::apkeep successfully downloaded $PKG $LATEST_VERSION"
+                  echo "::notice::apkeep downloaded latest $PKG"
                   APKKEPT_SUCCESS=true
-                  
-                  # Move to tools directory for build job to use
                   cp "$APK_FILE" tools/ 2>/dev/null || true
                 fi
               fi
@@ -266,12 +281,12 @@ jobs:
                   '.__morphe.download_urls[$pkg]["latest_supported"] = $url' \
                   patches.json > patches.json.tmp && mv patches.json.tmp patches.json
               else
-                # Try browser-based resolution as last resort
+                # Try browser-based resolution using Playwright
                 BROWSER_BIN=$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)
 
                 if [ -n "$BROWSER_BIN" ]; then
                   echo "::notice::Resolving APKMirror URL for $PKG $LATEST_VERSION..."
-                  RESULT=$(node .github/scripts/apkmirror-version-resolver.js "$PKG" "$LATEST_VERSION" "$PREFERRED_ARCH" "$BROWSER_BIN" 2>&1) || true
+                  RESULT=$(node .github/scripts/apkmirror-url-resolver.js "$PKG" "$LATEST_VERSION" "$PREFERRED_ARCH" "$BROWSER_BIN" 2>&1) || true
 
                   if echo "$RESULT" | jq -e '.download_url' >/dev/null 2>&1; then
                     DOWNLOAD_URL=$(echo "$RESULT" | jq -r '.download_url')
