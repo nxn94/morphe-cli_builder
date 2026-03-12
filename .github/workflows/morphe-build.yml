@@ -146,6 +146,14 @@ jobs:
         if: steps.version-check.outputs.should-build == 'true'
         run: npx playwright install chromium
 
+      - name: Cache apkeep
+        id: cache-apkeep
+        if: steps.version-check.outputs.should-build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/apkeep
+          key: apkeep-${{ runner.os }}-v1
+
       - name: Install apkeep
         if: steps.version-check.outputs.should-build == 'true'
         run: |
@@ -155,6 +163,13 @@ jobs:
           curl -sSL "$APKEEP_URL" -o /usr/local/bin/apkeep
           chmod +x /usr/local/bin/apkeep
           apkeep --version
+
+      - name: Install aurora-store
+        if: steps.version-check.outputs.should-build == 'true'
+        run: |
+          # aurora-droid (aurad) - free, no auth needed
+          curl -sSL https://github.com/Whyorean/AURAD/releases/download/nightly/aurad -o /usr/local/bin/aurad
+          chmod +x /usr/local/bin/aurad
 
       - name: Resolve latest APK versions from APKMirror
         if: steps.version-check.outputs.should-build == 'true'
@@ -204,111 +219,45 @@ jobs:
             fi
           fi
 
-          PREFERRED_ARCH="$(jq -r '.__morphe?.preferred_arch // "arm64-v8a"' patches.json)"
+      - name: Download APKs using unified-downloader
+        id: download-apks
+        if: steps.version-check.outputs.should-build == 'true'
+        run: |
+          set -euo pipefail
 
-          PKGS='["com.google.android.youtube","com.google.android.apps.youtube.music","com.reddit.frontpage"]'
+          for PKG in com.google.android.youtube com.google.android.apps.youtube.music com.reddit.frontpage; do
+            # Get version from morphe-cli list-versions
+            echo "Getting supported version for $PKG..."
+            VERSIONS_OUTPUT=$(java -jar tools/morphe-cli.jar list-versions "$PKG" 2>/dev/null || echo "")
 
-          for PKG in $(echo "$PKGS" | jq -r '.[]'); do
-            echo "::notice::Finding latest supported version for $PKG..."
-
-            # Use morphe-cli's built-in list-versions command to get compatible versions
-            VERSIONS_OUTPUT=$(java -jar "$CLI_JAR" list-versions "$PATCHES_FILE" -f "$PKG" 2>/dev/null) || true
-
-            if [ -z "$VERSIONS_OUTPUT" ]; then
-              echo "::warning::Could not get versions list for $PKG; using existing URL from patches.json."
-              continue
-            fi
-
-            # Extract the first version from the output (most common = first listed)
-            # Format: "20.44.38 (63 patches)" or "	20.44.38 (63 patches)"
             LATEST_VERSION=$(echo "$VERSIONS_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
 
             if [ -z "$LATEST_VERSION" ]; then
-              echo "::warning::Could not determine latest version for $PKG; using existing URL from patches.json."
+              echo "Could not determine version for $PKG, skipping..."
               continue
             fi
 
-            echo "::notice::Latest supported version for $PKG: $LATEST_VERSION"
+            echo "Downloading $PKG version $LATEST_VERSION..."
 
-            # First, try to download with apkeep (APKPure source)
-            echo "::notice::Trying apkeep download for $PKG $LATEST_VERSION..."
-            
-            APK_TEMP_DIR="$RUNNER_TEMP/apkkeep_$PKG"
-            mkdir -p "$APK_TEMP_DIR"
-            
-            APKKEPT_SUCCESS=false
-            if command -v apkeep &>/dev/null; then
-              # Try with @ syntax first
-              echo "::notice::Trying apkeep with @ syntax for $PKG@$LATEST_VERSION..."
-              APKEEP_OUTPUT=$(apkeep -a "${PKG}@${LATEST_VERSION}" -d apk-pure -o "$APK_TEMP_DIR" 2>&1) || true
-              echo "::debug::apkeep output: $APKEEP_OUTPUT"
+            APK_DIR="tools/apks"
+            mkdir -p "$APK_DIR"
 
-              # Check if we got a valid APK file
-              APK_FILE=$(find "$APK_TEMP_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1)
-              if [ -n "$APK_FILE" ] && [ -f "$APK_FILE" ]; then
-                echo "::notice::apkeep successfully downloaded $PKG $LATEST_VERSION"
-                APKKEPT_SUCCESS=true
+            RESULT=$(node .github/scripts/unified-downloader.js "$PKG" "$LATEST_VERSION" "$APK_DIR" 2>&1) || true
 
-                # Move to tools directory for build job to use
-                cp "$APK_FILE" tools/ 2>/dev/null || true
-              else
-                # Try without version to get latest available
-                echo "::notice::Version-specific download failed, trying latest version..."
-                APKEEP_OUTPUT=$(apkeep -a "$PKG" -d apk-pure -o "$APK_TEMP_DIR" 2>&1) || true
-                echo "::debug::apkeep latest output: $APKEEP_OUTPUT"
+            if echo "$RESULT" | jq -e '.success' >/dev/null 2>&1; then
+              FILEPATH=$(echo "$RESULT" | jq -r '.filepath')
+              SOURCE=$(echo "$RESULT" | jq -r '.source')
+              echo "Downloaded $PKG via $SOURCE: $FILEPATH"
 
-                APK_FILE=$(find "$APK_TEMP_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1)
-                if [ -n "$APK_FILE" ] && [ -f "$APK_FILE" ]; then
-                  echo "::notice::apkeep downloaded latest $PKG"
-                  APKKEPT_SUCCESS=true
-                  cp "$APK_FILE" tools/ 2>/dev/null || true
-                fi
+              # Update URL in patches.json
+              URL=$(echo "$RESULT" | jq -r '.url // empty')
+              if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+                node .github/scripts/update-download-urls.js "$PKG" "$LATEST_VERSION" "$URL" || true
               fi
-            fi
-            
-            if [ "$APKKEPT_SUCCESS" = true ]; then
-              echo "::notice::Downloaded $PKG $LATEST_VERSION via apkeep (APKPure)"
-              # Mark that we have a local APK available - build job will use it
             else
-              echo "::notice::apkeep failed for $PKG $LATEST_VERSION, falling back to APKMirror URL..."
-              
-              # Fall back to URL from patches.json
-              FALLBACK_URL="$(jq -r --arg pkg "$PKG" '.__morphe?.download_urls?[$pkg]?.["latest_supported"] // empty' patches.json 2>/dev/null || true)"
-              
-              if [ -n "$FALLBACK_URL" ]; then
-                echo "::notice::Using fallback URL for $PKG: $FALLBACK_URL"
-                jq --arg pkg "$PKG" --arg url "$FALLBACK_URL" \
-                  '.__morphe.download_urls[$pkg]["latest_supported"] = $url' \
-                  patches.json > patches.json.tmp && mv patches.json.tmp patches.json
-              else
-                # Try browser-based resolution using Playwright
-                BROWSER_BIN=$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)
-
-                if [ -n "$BROWSER_BIN" ]; then
-                  echo "::notice::Resolving APKMirror URL for $PKG $LATEST_VERSION..."
-                  RESULT=$(node .github/scripts/apkmirror-url-resolver.js "$PKG" "$LATEST_VERSION" "$PREFERRED_ARCH" "$BROWSER_BIN" 2>&1) || true
-
-                  if echo "$RESULT" | jq -e '.download_url' >/dev/null 2>&1; then
-                    DOWNLOAD_URL=$(echo "$RESULT" | jq -r '.download_url')
-                    echo "::notice::Resolved URL for $PKG $LATEST_VERSION: $DOWNLOAD_URL"
-
-                    jq --arg pkg "$PKG" --arg url "$DOWNLOAD_URL" \
-                      '.__morphe.download_urls[$pkg]["latest_supported"] = $url' \
-                      patches.json > patches.json.tmp && mv patches.json.tmp patches.json
-                  else
-                    echo "::warning::Failed to resolve URL for $PKG: $RESULT"
-                  fi
-                else
-                  echo "::warning::No browser found; cannot resolve APKMirror URLs automatically."
-                fi
-              fi
+              echo "Failed to download $PKG: $RESULT"
             fi
           done
-
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add patches.json
-          git diff --cached --quiet || git commit -m "chore: auto-resolve APK download URLs - patches $PATCHES_VERSION, cli $CLI_VERSION"
 
       - name: Upload downloaded APKs
         if: steps.version-check.outputs.should-build == 'true'
@@ -1320,6 +1269,26 @@ jobs:
           fi
 
           echo "::notice::Published release: ${DATE_TAG}"
+
+  update-download-urls:
+    needs: create-release
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Commit updated patches.json
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config --local user.email "github-actions[bot]@users.noreply.github.com"
+            git config --local user.name "github-actions[bot]"
+            git add patches.json
+            git commit -m "chore: update download URLs after successful build" || true
+            git push || true
+          else
+            echo "No changes to patches.json"
+          fi
 
   update-state:
     needs: [check-versions, build, create-release]
