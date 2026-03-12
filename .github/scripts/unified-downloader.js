@@ -469,9 +469,31 @@ async function downloadWithPlaywright(url, outputDir) {
 async function download(packageId, version, outputDir) {
   // Step 1: Check patches.json for existing URL
   const existingUrl = loadExistingUrl(packageId, version);
+
+  // Check if existing URL is a local file that already exists
   if (existingUrl) {
-    console.error(`Using existing URL from patches.json: ${existingUrl}`);
-    // Could add logic to skip download if file exists
+    console.error(`Found existing URL in patches.json: ${existingUrl}`);
+
+    // Check if it's a local file path that exists
+    if (!existingUrl.startsWith("http")) {
+      // Treat as local file path
+      const localPath = existingUrl;
+      if (fs.existsSync(localPath)) {
+        console.error(`Using existing local file: ${localPath}`);
+        console.log(JSON.stringify({
+          success: true,
+          filepath: localPath,
+          version: version,
+          source: "existing",
+          url: existingUrl
+        }, null, 2));
+        process.exit(0);
+      }
+    }
+
+    // For remote URLs, verify if we can use it directly
+    // For now, still try to download as fallback since URL may have changed
+    console.error(`Existing URL is remote, attempting download as fallback...`);
   }
 
   // Step 2: Try apkeep (APKPure) - first choice
