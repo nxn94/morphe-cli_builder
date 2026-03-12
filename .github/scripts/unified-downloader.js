@@ -12,6 +12,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFile } = require("child_process");
+const { chromium } = require("playwright");
 
 // APKMirror paths mapping
 const APK_MIRROR_PATHS = {
@@ -120,7 +121,15 @@ function runCommand(cmd, args, options = {}) {
       });
     }
 
+    let settled = false;
+    const cleanup = () => {
+      if (!settled) {
+        settled = true;
+      }
+    };
+
     proc.on("close", (code) => {
+      cleanup();
       if (code === 0) {
         resolve({ stdout, stderr, code });
       } else {
@@ -129,13 +138,17 @@ function runCommand(cmd, args, options = {}) {
     });
 
     proc.on("error", (err) => {
+      cleanup();
       reject(err);
     });
 
     // Handle timeout
     setTimeout(() => {
-      proc.kill("SIGTERM");
-      reject(new Error(`Command timed out after ${timeout}ms: ${cmd}`));
+      if (!settled) {
+        settled = true;
+        proc.kill("SIGTERM");
+        reject(new Error(`Command timed out after ${timeout}ms: ${cmd}`));
+      }
     }, timeout);
   });
 }
@@ -294,8 +307,6 @@ async function downloadWithApkmirror(packageId, version, outputDir) {
   }
 
   // First resolve the download URL
-  const { chromium } = require("playwright");
-
   const downloadUrl = await resolveApkmirrorUrl(apkmirrorPath, version);
   console.error(`[apkmirror] Resolved URL: ${downloadUrl}`);
 
@@ -319,8 +330,6 @@ async function downloadWithApkmirror(packageId, version, outputDir) {
  * Resolve APKMirror download URL using Playwright
  */
 async function resolveApkmirrorUrl(apkmirrorPath, version) {
-  const { chromium } = require("playwright");
-
   const baseUrl = `https://www.apkmirror.com/apk/${apkmirrorPath}/`;
   const variantUrl = `${baseUrl}${version.replace(/\./g, "-")}-release/`;
 
@@ -390,8 +399,6 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
  * Download with Playwright (internal)
  */
 async function downloadWithPlaywright(url, outputDir) {
-  const { chromium } = require("playwright");
-
   const tempDir = path.join(outputDir, ".playwright-temp");
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
