@@ -170,6 +170,7 @@ jobs:
           # aurora-droid (aurad) - free, no auth needed
           curl -sSL https://github.com/Whyorean/AURAD/releases/download/nightly/aurad -o /usr/local/bin/aurad
           chmod +x /usr/local/bin/aurad
+          ln -sf /usr/local/bin/aurad /usr/local/bin/aurora-store
 
       - name: Resolve latest APK versions from APKMirror
         if: steps.version-check.outputs.should-build == 'true'
@@ -225,6 +226,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          RESULTS_FILE="$RUNNER_TEMP/download_results.json"
+          echo "[]" > "$RESULTS_FILE"
+
           for PKG in com.google.android.youtube com.google.android.apps.youtube.music com.reddit.frontpage; do
             (
               # Get version from morphe-cli list-versions
@@ -250,10 +254,10 @@ jobs:
                 SOURCE=$(echo "$RESULT" | jq -r '.source')
                 echo "Downloaded $PKG via $SOURCE: $FILEPATH"
 
-                # Update URL in patches.json
+                # Instead of calling update-download-urls here, save to temp file
                 URL=$(echo "$RESULT" | jq -r '.url // empty')
                 if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-                  node .github/scripts/update-download-urls.js "$PKG" "$LATEST_VERSION" "$URL" || true
+                  echo "RESULT:$PKG:$LATEST_VERSION:$URL" >> "$RESULTS_FILE.tmp"
                 fi
               else
                 echo "Failed to download $PKG: $RESULT"
@@ -261,6 +265,13 @@ jobs:
             ) &
           done
           wait
+
+          # Now process sequentially
+          if [ -f "$RESULTS_FILE.tmp" ]; then
+            while IFS=: read -r pkg ver url; do
+              node .github/scripts/update-download-urls.js "$pkg" "$ver" "$url" || true
+            done < "$RESULTS_FILE.tmp"
+          fi
 
       - name: Upload downloaded APKs
         if: steps.version-check.outputs.should-build == 'true'
