@@ -226,38 +226,41 @@ jobs:
           set -euo pipefail
 
           for PKG in com.google.android.youtube com.google.android.apps.youtube.music com.reddit.frontpage; do
-            # Get version from morphe-cli list-versions
-            echo "Getting supported version for $PKG..."
-            VERSIONS_OUTPUT=$(java -jar tools/morphe-cli.jar list-versions "$PKG" 2>/dev/null || echo "")
+            (
+              # Get version from morphe-cli list-versions
+              echo "Getting supported version for $PKG..."
+              VERSIONS_OUTPUT=$(java -jar tools/morphe-cli.jar list-versions "$PKG" 2>/dev/null || echo "")
 
-            LATEST_VERSION=$(echo "$VERSIONS_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+              LATEST_VERSION=$(echo "$VERSIONS_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
 
-            if [ -z "$LATEST_VERSION" ]; then
-              echo "Could not determine version for $PKG, skipping..."
-              continue
-            fi
-
-            echo "Downloading $PKG version $LATEST_VERSION..."
-
-            APK_DIR="tools/apks"
-            mkdir -p "$APK_DIR"
-
-            RESULT=$(node .github/scripts/unified-downloader.js "$PKG" "$LATEST_VERSION" "$APK_DIR" 2>&1) || true
-
-            if echo "$RESULT" | jq -e '.success' >/dev/null 2>&1; then
-              FILEPATH=$(echo "$RESULT" | jq -r '.filepath')
-              SOURCE=$(echo "$RESULT" | jq -r '.source')
-              echo "Downloaded $PKG via $SOURCE: $FILEPATH"
-
-              # Update URL in patches.json
-              URL=$(echo "$RESULT" | jq -r '.url // empty')
-              if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-                node .github/scripts/update-download-urls.js "$PKG" "$LATEST_VERSION" "$URL" || true
+              if [ -z "$LATEST_VERSION" ]; then
+                echo "Could not determine version for $PKG, skipping..."
+                exit 0
               fi
-            else
-              echo "Failed to download $PKG: $RESULT"
-            fi
+
+              echo "Downloading $PKG version $LATEST_VERSION..."
+
+              APK_DIR="tools/apks"
+              mkdir -p "$APK_DIR"
+
+              RESULT=$(node .github/scripts/unified-downloader.js "$PKG" "$LATEST_VERSION" "$APK_DIR" 2>&1) || true
+
+              if echo "$RESULT" | jq -e '.success' >/dev/null 2>&1; then
+                FILEPATH=$(echo "$RESULT" | jq -r '.filepath')
+                SOURCE=$(echo "$RESULT" | jq -r '.source')
+                echo "Downloaded $PKG via $SOURCE: $FILEPATH"
+
+                # Update URL in patches.json
+                URL=$(echo "$RESULT" | jq -r '.url // empty')
+                if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+                  node .github/scripts/update-download-urls.js "$PKG" "$LATEST_VERSION" "$URL" || true
+                fi
+              else
+                echo "Failed to download $PKG: $RESULT"
+              fi
+            ) &
           done
+          wait
 
       - name: Upload downloaded APKs
         if: steps.version-check.outputs.should-build == 'true'
