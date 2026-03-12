@@ -186,21 +186,54 @@ async function downloadWithApkeep(packageId, version, outputDir) {
   }
 
   // Try apkeep with specific version first
-  // apkeep syntax: apkeep <package>@version or just apkeep <package>
+  // apkeep syntax: apkeep -a package@version -d source output_path
   const versionArg = version.includes("-") ? version : version.split(".").join(".");
 
+  let downloadedVersion = version;
+
+  // First, clear any existing files
+  if (fs.existsSync(outputDir)) {
+    const files = fs.readdirSync(outputDir);
+    for (const file of files) {
+      if (file !== '.playwright-temp') {
+        try {
+          fs.unlinkSync(path.join(outputDir, file));
+        } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  // Try latest version first (more reliable)
   try {
-    // First try with version specifier
-    await runCommand("apkeep", [`${packageId}@${versionArg}`, "-d", outputDir], {
+    console.error(`[apkeep] Trying latest version first...`);
+    await runCommand("apkeep", ["-a", packageId, "-d", "apk-pure", outputDir], {
       timeout: 180000
     });
+    // Extract version from downloaded filename
+    const apkPath = findApkFile(outputDir);
+    if (apkPath) {
+      // Try to extract version from filename
+      const basename = path.basename(apkPath);
+      const versionMatch = basename.match(/[0-9]+\.[0-9]+\.[0-9]+/);
+      if (versionMatch) {
+        downloadedVersion = versionMatch[0];
+        console.error(`[apkeep] Downloaded latest version: ${downloadedVersion}`);
+      }
+    } else {
+      throw new Error("No APK file found after download");
+    }
   } catch (e) {
-    console.error(`[apkeep] Version-specific download failed: ${e.message}`);
-    // Fall back to latest
+    console.error(`[apkeep] Latest version failed: ${e.message}`);
+    // Try specific version as fallback
+    console.error(`[apkeep] Trying specific version ${version}...`);
     try {
-      await runCommand("apkeep", [packageId, "-d", outputDir], {
+      await runCommand("apkeep", ["-a", `${packageId}@${versionArg}`, "-d", "apk-pure", outputDir], {
         timeout: 180000
       });
+      const apkPath = findApkFile(outputDir);
+      if (!apkPath) {
+        throw new Error("Specific version not found");
+      }
     } catch (e2) {
       throw new Error(`apkeep failed: ${e2.message}`);
     }
@@ -222,9 +255,9 @@ async function downloadWithApkeep(packageId, version, outputDir) {
   return {
     success: true,
     filepath: apkPath,
-    version: version,
+    version: downloadedVersion,
     source: "apkeep",
-    url: `apkeep:${packageId}@${version}`
+    url: `apkeep:${packageId}@${downloadedVersion}`
   };
 }
 
@@ -498,9 +531,40 @@ async function download(packageId, version, outputDir) {
       }
     }
 
-    // For remote URLs, verify if we can use it directly
-    // For now, still try to download as fallback since URL may have changed
-    console.error(`Existing URL is remote, attempting download as fallback...`);
+    // For remote URLs, try to download directly using the existing URL
+    if (existingUrl && existingUrl.startsWith("http")) {
+      console.error(`Using existing URL from patches.json: ${existingUrl}`);
+
+      // Try to download directly from the existing URL
+      try {
+        const directResult = await downloadFromUrl(existingUrl, packageId, version, outputDir);
+        if (directResult.success) {
+          console.error(`[direct] Downloaded using existing URL`);
+          console.log(JSON.stringify({
+            success: true,
+            filepath: directResult.filepath,
+            version: version,
+            source: "existing-url",
+            url: existingUrl
+          }, null, 2));
+          process.exit(0);
+        }
+      } catch (e) {
+        console.error(`[direct] Failed: ${e.message}, falling back to download chain...`);
+      }
+    } else {
+      console.error(`Existing URL is remote, attempting download as fallback...`);
+    }
+  }
+
+  // Helper function to download from a direct URL
+  async function downloadFromUrl(url, packageId, version, outputDir) {
+    // If URL is APKMirror, use Playwright
+    if (url.includes("apkmirror.com")) {
+      return await downloadWithPlaywright(url, outputDir);
+    }
+    // For other URLs, could add curl/wget support here
+    throw new Error("Direct download not supported for this URL type");
   }
 
   // Step 2: Try apkeep (APKPure) - first choice
