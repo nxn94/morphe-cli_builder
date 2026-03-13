@@ -319,8 +319,13 @@ jobs:
           set -euo pipefail
 
           echo "::notice::Installing system dependencies..."
-          apt-get update -y
-          apt-get install -y jq curl unzip libbcprov-java
+
+          # Set DEBIAN_FRONTEND for non-interactive mode
+          export DEBIAN_FRONTEND=noninteractive
+
+          # Try apt-get with full error output
+          apt-get update -y || { echo "apt-get update failed"; apt-get update -y -o APT::Update::Error-Mode=any; }
+          apt-get install -y jq curl unzip libbcprov-java || { echo "apt-get install failed"; apt-get install -y -o APT::Get::Fix-Missing=true jq curl unzip libbcprov-java; }
 
           # Verify curl and jq are available
           if ! command -v curl &> /dev/null; then
