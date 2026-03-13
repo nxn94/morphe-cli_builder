@@ -467,8 +467,8 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
 
     // Try to find version-specific link
     const versionSlug = version.replace(/\./g, "-");
-    let versionLinks = await page.$$eval('a[href*="release"]', links =>
-      links.map(l => l.href).filter(h => h.includes(versionSlug) && !h.includes("#"))
+    let versionLinks = await page.$$eval('a[href*="release"]', (links, vSlug) =>
+      links.map(l => l.href).filter(h => h.includes(vSlug) && !h.includes("#")), versionSlug
     );
 
     console.error(`[apkmirror] Found ${versionLinks.length} version links for exact version`);
