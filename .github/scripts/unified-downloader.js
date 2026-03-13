@@ -504,6 +504,8 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
 
 /**
  * Download with Playwright (internal)
+ * Improved to handle APKMirror's multi-step download process:
+ * 1. Initial download button → 2. Variant selection → 3. Final download
  */
 async function downloadWithPlaywright(url, outputDir) {
   const tempDir = path.join(outputDir, ".playwright-temp");
@@ -552,77 +554,195 @@ async function downloadWithPlaywright(url, outputDir) {
   });
 
   const page = await context.newPage();
-  const downloadPromise = context.waitForEvent("download", { timeout: 120000 });
+
+  // Set up download handler FIRST before navigation
+  const downloadPromise = context.waitForEvent("download", { timeout: 180000 }); // 3 min timeout for download
 
   try {
     console.error(`[apkmirror] Navigating to: ${url}`);
     await page.goto(url, { timeout: 90000, waitUntil: "domcontentloaded" });
 
-    // Wait for Cloudflare
+    // Wait for initial page load
     await page.waitForTimeout(5000);
 
     // Check for Cloudflare
     const title = await page.title();
+    console.error(`[apkmirror] Initial page title: ${title}`);
+
     if (title.includes("Just a moment") || title.includes("cloudflare")) {
       console.error(`[apkmirror] Cloudflare challenge detected, waiting...`);
-      // Wait for Cloudflare to complete
-      for (let i = 0; i < 10; i++) {
+      // Wait for Cloudflare to complete with retries
+      for (let i = 0; i < 15; i++) {
         await page.waitForTimeout(3000);
         const newTitle = await page.title();
-        if (!newTitle.includes("Just a moment") && !newTitle.includes("cloudflare")) {
+        console.error(`[apkmirror] Cloudflare check ${i+1}: ${newTitle}`);
+        if (!newTitle.includes("Just a moment") && !newTitle.includes("cloudflare") && !newTitle.includes("Checking your browser")) {
           console.error(`[apkmirror] Cloudflare challenge passed`);
           break;
         }
+        if (i === 14) {
+          throw new Error("Cloudflare challenge could not be completed");
+        }
       }
     }
+
+    // Additional wait for dynamic content
+    await page.waitForTimeout(3000);
 
     // Dismiss consent popup
     const consentSelectors = [
       '#qc-cmp2-container button[mode="primary"]',
       '#qc-cmp2-container button:has-text("Accept")',
       'button:has-text("Accept All")',
-      'button:has-text("I Agree")'
+      'button:has-text("I Agree")',
+      '.qc-cmp2-container button[mode="primary"]'
     ];
 
     for (const selector of consentSelectors) {
       try {
         const consentBtn = await page.$(selector);
         if (consentBtn) {
-          console.error(`[apkmirror] Dismissing consent popup`);
-          await consentBtn.click();
+          console.error(`[apkmirror] Dismissing consent popup with: ${selector}`);
+          await consentBtn.click({ timeout: 5000 });
           await page.waitForTimeout(2000);
           break;
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        // Continue to next selector
+      }
     }
 
-    // Click download button
-    const downloadButtonSelectors = [
+    // Click first download button (on variant selection page)
+    const firstDownloadSelectors = [
       "a.downloadButton",
       "a.btn.btn-flat.downloadButton",
       "a:has-text('Download APK')",
-      "a[class*='downloadButton']"
+      "a[class*='downloadButton']",
+      "span[class*='downloadButton'] a"
     ];
 
-    for (const selector of downloadButtonSelectors) {
+    let clickedFirstButton = false;
+    for (const selector of firstDownloadSelectors) {
       try {
         const btn = await page.$(selector);
         if (btn) {
-          console.error(`[apkmirror] Clicking download button: ${selector}`);
-          await btn.click();
+          console.error(`[apkmirror] Clicking first download button: ${selector}`);
+          await btn.click({ timeout: 10000 });
+          clickedFirstButton = true;
           break;
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        console.error(`[apkmirror] Selector ${selector} failed: ${e.message}`);
+      }
     }
 
+    if (!clickedFirstButton) {
+      // Try to find and click any link that leads to download
+      const downloadLinks = await page.$$eval('a[href*="/download/"]', links => links.map(l => l.href));
+      console.error(`[apkmirror] Found ${downloadLinks.length} download links`);
+    }
+
+    // Wait for potential redirect to variant selection
+    await page.waitForTimeout(5000);
+
+    // Check current URL - if changed, we might be on variant selection
+    const currentUrl = page.url();
+    console.error(`[apkmirror] Current URL after first click: ${currentUrl}`);
+
+    // If URL changed to a new page, we might need to click again
+    if (currentUrl !== url) {
+      console.error(`[apkmirror] Detected page change, waiting for variant/download options...`);
+      await page.waitForTimeout(3000);
+    }
+
+    // Now click the FINAL download button (might be on same page or new page)
+    // APKMirror often has a second button after variant selection
+    const finalDownloadSelectors = [
+      "a.downloadButton",  // The actual download button
+      "a[data-track*='Download']",
+      "button:has-text('Download')",
+      "a:has-text('Download APK')",
+      "a.btn-success",
+      "a[class*='btn-primary']"
+    ];
+
+    let clickedFinalButton = false;
+    for (const selector of finalDownloadSelectors) {
+      try {
+        const btn = await page.$(selector);
+        if (btn) {
+          const btnText = await btn.textContent();
+          console.error(`[apkmirror] Clicking final download button: ${selector} (text: ${btnText})`);
+          await btn.click({ timeout: 10000 });
+          clickedFinalButton = true;
+          break;
+        }
+      } catch (e) {
+        // Continue to next selector
+      }
+    }
+
+    // If still no button clicked, try to follow any redirect link
+    if (!clickedFinalButton) {
+      console.error(`[apkmirror] No final button found, looking for download links...`);
+      const redirectLink = await page.$('a[href*="download"]');
+      if (redirectLink) {
+        const href = await redirectLink.getAttribute("href");
+        if (href && href.startsWith("http")) {
+          console.error(`[apkmirror] Following redirect link: ${href}`);
+          await page.goto(href, { timeout: 60000, waitUntil: "domcontentloaded" });
+          await page.waitForTimeout(5000);
+        }
+      }
+    }
+
+    // Wait for download to start
     console.error(`[apkmirror] Waiting for download to start...`);
-    const download = await downloadPromise;
+
+    // Wait longer - APKMirror can be slow
+    let download;
+    try {
+      download = await downloadPromise;
+    } catch (downloadError) {
+      console.error(`[apkmirror] Download event timed out, checking page state...`);
+
+      // Take a screenshot for debugging (save to temp)
+      try {
+        const debugPath = path.join(tempDir, "debug.png");
+        await page.screenshot({ path: debugPath });
+        console.error(`[apkmirror] Debug screenshot saved to: ${debugPath}`);
+      } catch (e) { /* ignore */ }
+
+      // Check if there's a countdown or manual download link
+      const pageContent = await page.content();
+      if (pageContent.includes("countdown") || pageContent.includes("seconds")) {
+        console.error(`[apkmirror] Countdown detected, waiting...`);
+        await page.waitForTimeout(30000); // Wait for countdown
+        // Try to find and click download again
+        const retryBtn = await page.$("a.downloadButton, a:has-text('Download')");
+        if (retryBtn) {
+          console.error(`[apkmirror] Clicking download after countdown...`);
+          const newDownloadPromise = context.waitForEvent("download", { timeout: 120000 });
+          await retryBtn.click();
+          download = await newDownloadPromise;
+        }
+      } else {
+        throw downloadError;
+      }
+    }
+
     const filename = download.suggestedFilename();
+    console.error(`[apkmirror] Download detected, filename: ${filename}`);
+
     const downloadedPath = await download.path();
+    if (!downloadedPath) {
+      throw new Error("Download path is null");
+    }
 
     const outputPath = path.join(tempDir, filename);
     fs.copyFileSync(downloadedPath, outputPath);
 
+    console.error(`[apkmirror] Download complete: ${outputPath}`);
     return { success: true, path: outputPath, filename };
   } finally {
     await browser.close();
