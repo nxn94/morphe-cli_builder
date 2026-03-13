@@ -702,10 +702,12 @@ async function download(packageId, version, outputDir) {
   console.error(`[aurora] Skipping: aurora-store CLI not available`);
 
   // Step 4: Try APKMirror with Playwright - last resort
+  console.error(`[apkmirror] Starting APKMirror fallback...`);
   try {
     return await downloadWithApkmirror(packageId, version, outputDir);
   } catch (e) {
     console.error(`[apkmirror] Failed: ${e.message}`);
+    throw e; // Re-throw to see the full error
   }
 
   // All methods failed
