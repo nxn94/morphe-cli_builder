@@ -273,7 +273,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pre-downloaded-apks
-          path: tools/*.apk tools/*.xapk tools/*.apkm tools/*.apks 2>/dev/null || true
+          path: tools/apks/*.apk tools/apks/*.xapk tools/apks/*.apkm tools/apks/*.apks 2>/dev/null || true
           retention-days: 1
 
   build:
