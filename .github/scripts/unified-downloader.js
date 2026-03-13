@@ -466,11 +466,27 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
 
     // Try to find version-specific link
     const versionSlug = version.replace(/\./g, "-");
-    const versionLinks = await page.$$eval('a[href*="release"]', links =>
+    let versionLinks = await page.$$eval('a[href*="release"]', links =>
       links.map(l => l.href).filter(h => h.includes(versionSlug))
     );
 
-    console.error(`[apkmirror] Found ${versionLinks.length} version links`);
+    console.error(`[apkmirror] Found ${versionLinks.length} version links for exact version`);
+
+    // If exact version not found, try to get the latest version available
+    if (versionLinks.length === 0) {
+      console.error(`[apkmirror] Exact version not found, trying to get latest available version...`);
+
+      // Get the first available version from the page
+      const allVersionLinks = await page.$$eval('a[href*="release"]', links =>
+        links.map(l => l.href).filter(h => h.includes("/youtube/") && h.includes("-release"))
+      );
+
+      if (allVersionLinks.length > 0) {
+        console.error(`[apkmirror] Found ${allVersionLinks.length} available versions, using first one`);
+        await browser.close();
+        return allVersionLinks[0];
+      }
+    }
 
     if (versionLinks.length > 0) {
       await browser.close();
