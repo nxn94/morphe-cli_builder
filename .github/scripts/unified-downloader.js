@@ -348,6 +348,27 @@ function checkCache(packageId, version) {
   for (const file of files) {
     if (file.startsWith(prefix)) {
       const filepath = path.join(CACHE_DIR, file);
+
+      // Validate cached APK - check size and magic bytes
+      const stats = fs.statSync(filepath);
+      if (stats.size < 1000000) {
+        console.error(`[cache] Invalid cache (too small): ${filepath}, removing`);
+        fs.unlinkSync(filepath);
+        continue;
+      }
+
+      // Check magic bytes (PK = ZIP/APK)
+      const buffer = Buffer.alloc(2);
+      const fd = fs.openSync(filepath, 'r');
+      fs.readSync(fd, buffer, 0, 2, 0);
+      fs.closeSync(fd);
+
+      if (buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
+        console.error(`[cache] Invalid cache (not APK): ${filepath}, removing`);
+        fs.unlinkSync(filepath);
+        continue;
+      }
+
       console.error(`[cache] Found cached APK: ${filepath}`);
       return filepath;
     }
@@ -360,6 +381,26 @@ function checkCache(packageId, version) {
  * Save to cache
  */
 function saveToCache(packageId, version, filepath) {
+  // Validate APK before caching - check file size and magic bytes
+  if (fs.existsSync(filepath)) {
+    const stats = fs.statSync(filepath);
+    if (stats.size < 1000000) { // Less than 1MB is suspicious
+      console.error(`[cache] Skipping cache - file too small (${stats.size} bytes)`);
+      return null;
+    }
+
+    // Check magic bytes (PK = ZIP/APK)
+    const buffer = Buffer.alloc(2);
+    const fd = fs.openSync(filepath, 'r');
+    fs.readSync(fd, buffer, 0, 2, 0);
+    fs.closeSync(fd);
+
+    if (buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
+      console.error(`[cache] Skipping cache - not a valid APK (wrong magic bytes)`);
+      return null;
+    }
+  }
+
   if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
   }
