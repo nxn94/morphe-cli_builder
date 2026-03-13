@@ -226,8 +226,10 @@ jobs:
               # Get version from morphe-cli list-versions
               echo "Getting supported version for $PKG..."
               VERSIONS_OUTPUT=$(java -jar tools/morphe-cli.jar list-versions "$PKG" 2>/dev/null || echo "")
+              echo "::debug::morphe-cli output for $PKG: $VERSIONS_OUTPUT"
 
               LATEST_VERSION=$(echo "$VERSIONS_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+              echo "::debug::Extracted version for $PKG: $LATEST_VERSION"
 
               if [ -z "$LATEST_VERSION" ]; then
                 echo "Could not determine version for $PKG, skipping..."
@@ -240,6 +242,7 @@ jobs:
               mkdir -p "$APK_DIR"
 
               RESULT=$(node .github/scripts/unified-downloader.js "$PKG" "$LATEST_VERSION" "$APK_DIR" 2>&1) || true
+              echo "::debug::unified-downloader result for $PKG: $RESULT"
 
               if echo "$RESULT" | jq -e '.success' >/dev/null 2>&1; then
                 FILEPATH=$(echo "$RESULT" | jq -r '.filepath')
