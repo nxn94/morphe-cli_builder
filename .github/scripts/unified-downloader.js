@@ -187,7 +187,8 @@ async function downloadWithApkeep(packageId, version, outputDir) {
 
   // Try apkeep with specific version first (what patches need)
   // apkeep syntax: apkeep -a package@version -d source output_path
-  const versionArg = version.includes("-") ? version : version.split(".").join(".");
+  // Use version as-is; APKPure accepts standard version formats
+  const versionArg = version;
 
   let downloadedVersion = version;
 
