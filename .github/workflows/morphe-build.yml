@@ -332,6 +332,17 @@ jobs:
 
           echo "::notice::All dependencies verified"
 
+      - name: Install BouncyCastle for signing
+        run: |
+          set -euo pipefail
+          echo "::notice::Installing BouncyCastle for APK signing..."
+          apt-get update -qq && apt-get install -y -qq libbcprov-java >/dev/null 2>&1 || true
+          if [ -f /usr/share/java/bcprov.jar ]; then
+            echo "✓ BouncyCastle installed: /usr/share/java/bcprov.jar"
+          else
+            echo "::warning::BouncyCastle not found, will try alternate location"
+          fi
+
       - name: Cache apkeep
         id: cache-apkeep
         uses: actions/cache@v4
