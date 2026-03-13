@@ -185,7 +185,7 @@ async function downloadWithApkeep(packageId, version, outputDir) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  // Try apkeep with specific version first
+  // Try apkeep with specific version first (what patches need)
   // apkeep syntax: apkeep -a package@version -d source output_path
   const versionArg = version.includes("-") ? version : version.split(".").join(".");
 
@@ -203,40 +203,37 @@ async function downloadWithApkeep(packageId, version, outputDir) {
     }
   }
 
-  // Try latest version first (more reliable)
+  // Try SPECIFIC version first (what Morphe patches need)
+  let specificVersionFailed = false;
   try {
-    console.error(`[apkeep] Trying latest version first...`);
-    await runCommand("apkeep", ["-a", packageId, "-d", "apk-pure", outputDir], {
+    console.error(`[apkeep] Trying specific version ${version}...`);
+    await runCommand("apkeep", ["-a", `${packageId}@${versionArg}`, "-d", "apk-pure", outputDir], {
       timeout: 180000
     });
-    // Extract version from downloaded filename
     const apkPath = findApkFile(outputDir);
     if (apkPath) {
-      // Try to extract version from filename
-      const basename = path.basename(apkPath);
-      const versionMatch = basename.match(/[0-9]+\.[0-9]+\.[0-9]+/);
-      if (versionMatch) {
-        downloadedVersion = versionMatch[0];
-        console.error(`[apkeep] Downloaded latest version: ${downloadedVersion}`);
-      }
+      downloadedVersion = version;
+      console.error(`[apkeep] Downloaded specific version: ${downloadedVersion}`);
     } else {
-      throw new Error("No APK file found after download");
+      specificVersionFailed = true;
     }
   } catch (e) {
-    console.error(`[apkeep] Latest version failed: ${e.message}`);
-    // Try specific version as fallback
-    console.error(`[apkeep] Trying specific version ${version}...`);
-    try {
-      await runCommand("apkeep", ["-a", `${packageId}@${versionArg}`, "-d", "apk-pure", outputDir], {
-        timeout: 180000
-      });
-      const apkPath = findApkFile(outputDir);
-      if (!apkPath) {
-        throw new Error("Specific version not found");
+    console.error(`[apkeep] Specific version ${version} not available: ${e.message}`);
+    specificVersionFailed = true;
+  }
+
+  // If specific version failed, return failure so caller can try APKMirror
+  if (specificVersionFailed || !findApkFile(outputDir)) {
+    // Clear any partial downloads
+    const files = fs.readdirSync(outputDir);
+    for (const file of files) {
+      if (file !== '.playwright-temp') {
+        try {
+          fs.unlinkSync(path.join(outputDir, file));
+        } catch (e) { /* ignore */ }
       }
-    } catch (e2) {
-      throw new Error(`apkeep failed: ${e2.message}`);
     }
+    throw new Error(`Specific version ${version} not available on APKPure`);
   }
 
   // Find the downloaded file
@@ -360,13 +357,14 @@ async function downloadWithApkmirror(packageId, version, outputDir) {
 }
 
 /**
- * Resolve APKMirror download URL using Playwright
+ * Resolve APKMirror download URL using Playwright with improved Cloudflare handling
  */
 async function resolveApkmirrorUrl(apkmirrorPath, version) {
   const baseUrl = `https://www.apkmirror.com/apk/${apkmirrorPath}/`;
   const variantUrl = `${baseUrl}${version.replace(/\./g, "-")}-release/`;
 
-  const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  // More realistic user agent
+  const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
   const browser = await chromium.launch({
     headless: true,
@@ -375,47 +373,104 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
-      "--disable-gpu"
+      "--disable-gpu",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--metrics-recording-only",
+      "--mute-audio",
+      "--no-first-run",
+      "--safebrowsing-disable-auto-update"
     ]
   });
 
   const context = await browser.newContext({
     userAgent: UA,
-    viewport: { width: 1920, height: 1080 }
+    viewport: { width: 1920, height: 1080 },
+    locale: "en-US",
+    timezoneId: "America/New_York",
+    permissions: ["geolocation"],
+    extraHTTPHeaders: {
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    }
   });
 
+  // Add stealth scripts
   await context.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+    window.chrome = { runtime: {} };
+    // Override permissions
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+    );
   });
 
   const page = await context.newPage();
 
+  // Track if we hit Cloudflare
+  let cloudflareAttempts = 0;
+  const maxCloudflareAttempts = 3;
+
+  const waitForCloudflare = async () => {
+    const title = await page.title();
+    if (title.includes("Just a moment") || title.includes("cloudflare") || title.includes("Checking your browser")) {
+      cloudflareAttempts++;
+      console.error(`[apkmirror] Cloudflare challenge detected, attempt ${cloudflareAttempts}/${maxCloudflareAttempts}`);
+      if (cloudflareAttempts >= maxCloudflareAttempts) {
+        throw new Error("Cloudflare challenge failed after multiple attempts");
+      }
+      await page.waitForTimeout(10000); // Wait longer for Cloudflare
+      return true;
+    }
+    return false;
+  };
+
   try {
     // Try variant URL first
-    await page.goto(variantUrl, { timeout: 30000, waitUntil: "domcontentloaded" });
+    console.error(`[apkmirror] Trying variant URL: ${variantUrl}`);
+    await page.goto(variantUrl, { timeout: 60000, waitUntil: "domcontentloaded" });
 
-    // Wait for page to settle
+    // Wait for Cloudflare
+    await page.waitForTimeout(5000);
+    await waitForCloudflare();
+
+    // Additional wait for page to fully load
     await page.waitForTimeout(3000);
 
     const title = await page.title();
-    if (title.includes("404") || title.includes("Not Found")) {
+    console.error(`[apkmirror] Page title: ${title}`);
+
+    if (title.includes("404") || title.includes("Not Found") || title.includes("File not found")) {
       // Try base URL to find correct version
-      await page.goto(baseUrl, { timeout: 30000, waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(3000);
+      console.error(`[apkmirror] Version not found, trying base URL`);
+      await page.goto(baseUrl, { timeout: 60000, waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(5000);
+      await waitForCloudflare();
     }
 
     // Find download link
-    const downloadLink = await page.$('a.downloadButton, a[class*="downloadButton"]');
+    const downloadLink = await page.$('a.downloadButton, a[class*="downloadButton"], a.btn.btn-flat.downloadButton');
     if (downloadLink) {
       const href = await downloadLink.getAttribute("href");
+      console.error(`[apkmirror] Found download link: ${href}`);
       await browser.close();
       return `https://www.apkmirror.com${href}`;
     }
 
     // Try to find version-specific link
+    const versionSlug = version.replace(/\./g, "-");
     const versionLinks = await page.$$eval('a[href*="release"]', links =>
-      links.map(l => l.href).filter(h => h.includes(version.replace(/\./g, "-")))
+      links.map(l => l.href).filter(h => h.includes(versionSlug))
     );
+
+    console.error(`[apkmirror] Found ${versionLinks.length} version links`);
 
     if (versionLinks.length > 0) {
       await browser.close();
@@ -437,7 +492,7 @@ async function downloadWithPlaywright(url, outputDir) {
     fs.mkdirSync(tempDir, { recursive: true });
   }
 
-  const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
   const browser = await chromium.launch({
     headless: true,
@@ -446,50 +501,102 @@ async function downloadWithPlaywright(url, outputDir) {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
-      "--disable-gpu"
+      "--disable-gpu",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--metrics-recording-only",
+      "--mute-audio",
+      "--no-first-run",
+      "--safebrowsing-disable-auto-update"
     ]
   });
 
   const context = await browser.newContext({
     userAgent: UA,
-    viewport: { width: 1920, height: 1080 }
+    viewport: { width: 1920, height: 1080 },
+    locale: "en-US",
+    timezoneId: "America/New_York",
+    permissions: ["geolocation"],
+    extraHTTPHeaders: {
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    }
   });
 
   await context.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+    window.chrome = { runtime: {} };
   });
 
   const page = await context.newPage();
-  const downloadPromise = context.waitForEvent("download", { timeout: 90000 });
+  const downloadPromise = context.waitForEvent("download", { timeout: 120000 });
 
   try {
-    await page.goto(url, { timeout: 60000, waitUntil: "domcontentloaded" });
+    console.error(`[apkmirror] Navigating to: ${url}`);
+    await page.goto(url, { timeout: 90000, waitUntil: "domcontentloaded" });
 
     // Wait for Cloudflare
     await page.waitForTimeout(5000);
 
+    // Check for Cloudflare
+    const title = await page.title();
+    if (title.includes("Just a moment") || title.includes("cloudflare")) {
+      console.error(`[apkmirror] Cloudflare challenge detected, waiting...`);
+      // Wait for Cloudflare to complete
+      for (let i = 0; i < 10; i++) {
+        await page.waitForTimeout(3000);
+        const newTitle = await page.title();
+        if (!newTitle.includes("Just a moment") && !newTitle.includes("cloudflare")) {
+          console.error(`[apkmirror] Cloudflare challenge passed`);
+          break;
+        }
+      }
+    }
+
     // Dismiss consent popup
-    const consentBtn = await page.$('#qc-cmp2-container button[mode="primary"]');
-    if (consentBtn) {
-      await consentBtn.click();
-      await page.waitForTimeout(2000);
+    const consentSelectors = [
+      '#qc-cmp2-container button[mode="primary"]',
+      '#qc-cmp2-container button:has-text("Accept")',
+      'button:has-text("Accept All")',
+      'button:has-text("I Agree")'
+    ];
+
+    for (const selector of consentSelectors) {
+      try {
+        const consentBtn = await page.$(selector);
+        if (consentBtn) {
+          console.error(`[apkmirror] Dismissing consent popup`);
+          await consentBtn.click();
+          await page.waitForTimeout(2000);
+          break;
+        }
+      } catch (e) { /* ignore */ }
     }
 
     // Click download button
     const downloadButtonSelectors = [
       "a.downloadButton",
       "a.btn.btn-flat.downloadButton",
-      "a:has-text('Download APK')"
+      "a:has-text('Download APK')",
+      "a[class*='downloadButton']"
     ];
 
     for (const selector of downloadButtonSelectors) {
-      const btn = await page.$(selector);
-      if (btn) {
-        await btn.click();
-        break;
-      }
+      try {
+        const btn = await page.$(selector);
+        if (btn) {
+          console.error(`[apkmirror] Clicking download button: ${selector}`);
+          await btn.click();
+          break;
+        }
+      } catch (e) { /* ignore */ }
     }
 
+    console.error(`[apkmirror] Waiting for download to start...`);
     const download = await downloadPromise;
     const filename = download.suggestedFilename();
     const downloadedPath = await download.path();
