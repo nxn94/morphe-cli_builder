@@ -830,18 +830,11 @@ jobs:
           else
             # Try unified-downloader.js to download the specific version
             echo "::notice::No pre-downloaded APK found, using unified-downloader for $APP_ID version $TARGET_VERSION..."
-            # Capture both stdout and stderr, and check for success in the output
-            RESULT=$(node .github/scripts/unified-downloader.js "$APP_ID" "$TARGET_VERSION" "$APKS_DIR" 2>&1) || true
-            echo "::debug::unified-downloader raw output: $RESULT"
-
-            # Check if result contains success
-            if echo "$RESULT" | jq -e '.success' >/dev/null 2>&1; then
+            if RESULT=$(node .github/scripts/unified-downloader.js "$APP_ID" "$TARGET_VERSION" "$APKS_DIR" 2>&1); then
               echo "::notice::unified-downloader succeeded: $RESULT"
               DOWNLOAD_SUCCESS=true
             else
-              # Extract error message if available
-              ERROR_MSG=$(echo "$RESULT" | jq -r '.error // .message // "unknown error"' 2>/dev/null || echo "$RESULT")
-              echo "::warning::unified-downloader failed: $ERROR_MSG"
+              echo "::warning::unified-downloader failed: $RESULT"
 
               # Fallback to manual URL if provided
               if [ -n "$MANUAL_URL" ]; then
