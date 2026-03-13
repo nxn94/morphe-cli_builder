@@ -3,16 +3,28 @@
 /**
  * Unified APK Downloader
  * Downloads APK files from multiple sources with fallback chain:
- * 1. Check patches.json for existing URL
- * 2. apkeep (APKPure) - try first
- * 3. aurora-store - fallback second
- * 4. apkmirror with Playwright - last resort
+ * 1. Check cache for existing APK
+ * 2. Check patches.json for existing URL
+ * 3. apkeep (APKPure) - try first
+ * 4. APKMirror API - second
+ * 5. apkmirror with Playwright - last resort
+ *
+ * Cache: Downloads are cached in ~/.cache/auto-morphe-builder/apks/
+ * Old versions are cleaned up when a new version is successfully downloaded
  */
 
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFile } = require("child_process");
 const { chromium } = require("playwright");
+const os = require("node:os");
+
+// APKMirror API credentials
+const APK_MIRROR_API_USER = "api-apkupdater";
+const APK_MIRROR_API_PASS = "rm5rcfruUjKy04sMpyMPJXW8";
+
+// Cache directory
+const CACHE_DIR = path.join(os.homedir(), ".cache", "auto-morphe-builder", "apks");
 
 // APKMirror paths mapping
 const APK_MIRROR_PATHS = {
@@ -319,6 +331,155 @@ async function downloadWithAurora(packageId, version, outputDir) {
     source: "aurora",
     url: `aurora:${packageId}@${version}`
   };
+}
+
+/**
+ * Check cache for existing APK
+ */
+function checkCache(packageId, version) {
+  if (!fs.existsSync(CACHE_DIR)) {
+    return null;
+  }
+
+  // Look for files matching the package
+  const files = fs.readdirSync(CACHE_DIR);
+  const prefix = `${packageId.replace(/\./g, "_")}_v${version}`;
+
+  for (const file of files) {
+    if (file.startsWith(prefix)) {
+      const filepath = path.join(CACHE_DIR, file);
+      console.error(`[cache] Found cached APK: ${filepath}`);
+      return filepath;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Save to cache
+ */
+function saveToCache(packageId, version, filepath) {
+  if (!fs.existsSync(CACHE_DIR)) {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+  }
+
+  const ext = path.extname(filepath);
+  const filename = `${packageId.replace(/\./g, "_")}_v${version}${ext}`;
+  const destPath = path.join(CACHE_DIR, filename);
+
+  fs.copyFileSync(filepath, destPath);
+  console.error(`[cache] Saved to cache: ${destPath}`);
+
+  // Clean up old versions (keep only latest 2 per package)
+  cleanupOldVersions(packageId);
+}
+
+/**
+ * Clean up old APK versions from cache
+ */
+function cleanupOldVersions(packageId) {
+  if (!fs.existsSync(CACHE_DIR)) {
+    return;
+  }
+
+  const files = fs.readdirSync(CACHE_DIR);
+  const prefix = `${packageId.replace(/\./g, "_")}_v`;
+
+  // Get all versions for this package
+  const packageFiles = files
+    .filter(f => f.startsWith(prefix) && (f.endsWith(".apk") || f.endsWith(".xapk") || f.endsWith(".apkm")))
+    .sort()
+    .reverse();
+
+  // Keep only the latest 2 versions
+  const toDelete = packageFiles.slice(2);
+  for (const file of toDelete) {
+    const filepath = path.join(CACHE_DIR, file);
+    fs.unlinkSync(filepath);
+    console.error(`[cache] Removed old version: ${filepath}`);
+  }
+}
+
+/**
+ * Download using APKMirror API
+ */
+async function downloadWithApkmirrorApi(packageId, version, outputDir) {
+  console.error(`[apkmirror-api] Attempting download for ${packageId} v${version} via API`);
+
+  const apkmirrorPath = APK_MIRROR_PATHS[packageId];
+  if (!apkmirrorPath) {
+    throw new Error(`No APKMirror path configured for ${packageId}`);
+  }
+
+  // Ensure output directory exists
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  // Try to get download URL from APKMirror API
+  const apiUrl = `https://www.apkmirror.com/wp-json/apkm/v1/${apkmirrorPath}/${version}`;
+
+  try {
+    // Make API request with basic auth
+    const auth = Buffer.from(`${APK_MIRROR_API_USER}:${APK_MIRROR_API_PASS}`).toString("base64");
+
+    const response = await fetch(apiUrl, {
+      headers: {
+        "Authorization": `Basic ${auth}`,
+        "Accept": "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}`);
+    }
+
+    const data = await response.json();
+    const downloadUrl = data.downloadUrl;
+
+    if (!downloadUrl) {
+      throw new Error("No download URL in API response");
+    }
+
+    console.error(`[apkmirror-api] Got download URL: ${downloadUrl}`);
+
+    // Download the file using curl
+    const filename = `${packageId.replace(/\./g, "_")}_v${version}.apk`;
+    const outputPath = path.join(outputDir, filename);
+
+    const curlResult = await new Promise((resolve, reject) => {
+      const curl = execFile("curl", [
+        "-L",
+        "-o", outputPath,
+        downloadUrl
+      ], { timeout: 300000 }, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+
+    if (fs.existsSync(outputPath)) {
+      const stats = fs.statSync(outputPath);
+      console.error(`[apkmirror-api] Downloaded: ${outputPath} (${stats.size} bytes)`);
+
+      // Save to cache
+      saveToCache(packageId, version, outputPath);
+
+      return {
+        success: true,
+        filepath: outputPath,
+        version: version,
+        source: "apkmirror-api",
+        url: downloadUrl
+      };
+    }
+
+    throw new Error("Download file not found");
+  } catch (e) {
+    console.error(`[apkmirror-api] Failed: ${e.message}`);
+    throw e;
+  }
 }
 
 /**
@@ -804,28 +965,66 @@ async function download(packageId, version, outputDir) {
     }
   }
 
-  // Helper function to download from a direct URL
+  // Helper function to download from a direct URL using Playwright
   async function downloadFromUrl(url, packageId, version, outputDir) {
-    // If URL is APKMirror, use Playwright
+    // If URL is APKMirror, use Playwright (required for their JavaScript-based downloads)
     if (url.includes("apkmirror.com")) {
-      return await downloadWithPlaywright(url, outputDir);
+      try {
+        return await downloadWithPlaywright(url, outputDir);
+      } catch (e) {
+        console.error(`[direct] Playwright failed: ${e.message}`);
+        throw e;
+      }
     }
     // For other URLs, could add curl/wget support here
     throw new Error("Direct download not supported for this URL type");
   }
 
+  // Step 1: Check cache first
+  const cachedPath = checkCache(packageId, version);
+  if (cachedPath && fs.existsSync(cachedPath)) {
+    // Copy from cache to output dir
+    const filename = path.basename(cachedPath);
+    const outputPath = path.join(outputDir, filename);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    fs.copyFileSync(cachedPath, outputPath);
+    console.error(`[cache] Copied from cache: ${outputPath}`);
+
+    console.log(JSON.stringify({
+      success: true,
+      filepath: outputPath,
+      version: version,
+      source: "cache",
+      url: cachedPath
+    }, null, 2));
+    process.exit(0);
+  }
+
   // Step 2: Try apkeep (APKPure) - first choice
   try {
-    return await downloadWithApkeep(packageId, version, outputDir);
+    const result = await downloadWithApkeep(packageId, version, outputDir);
+    // Save to cache
+    saveToCache(packageId, version, result.filepath);
+    return result;
   } catch (e) {
     console.error(`[apkeep] Failed: ${e.message}`);
   }
 
-  // Step 3: Skip aurora-store (no working CLI available)
+  // Step 3: Try APKMirror API
+  console.error(`[apkmirror-api] Trying APKMirror API...`);
+  try {
+    return await downloadWithApkmirrorApi(packageId, version, outputDir);
+  } catch (e) {
+    console.error(`[apkmirror-api] Failed: ${e.message}`);
+  }
+
+  // Step 4: Skip aurora-store (no working CLI available)
   console.error(`[aurora] Skipping: aurora-store CLI not available`);
 
-  // Step 4: Try APKMirror with Playwright - last resort
-  console.error(`[apkmirror] Starting APKMirror fallback...`);
+  // Step 5: Try APKMirror with Playwright - last resort
+  console.error(`[apkmirror] Starting APKMirror Playwright fallback...`);
   try {
     return await downloadWithApkmirror(packageId, version, outputDir);
   } catch (e) {
