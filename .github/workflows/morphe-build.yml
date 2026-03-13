@@ -336,11 +336,32 @@ jobs:
         run: |
           set -euo pipefail
           echo "::notice::Installing BouncyCastle for APK signing..."
-          apt-get update -qq && apt-get install -y -qq libbcprov-java >/dev/null 2>&1 || true
-          if [ -f /usr/share/java/bcprov.jar ]; then
-            echo "✓ BouncyCastle installed: /usr/share/java/bcprov.jar"
+          # Try multiple approaches
+          apt-get update -qq 2>&1 || true
+          apt-get install -y libbcprov-java 2>&1 || true
+
+          # Check multiple possible locations
+          BCPROV_JAR=""
+          for path in /usr/share/java/bcprov.jar /usr/share/java/bcprov*.jar /usr/share/java/bouncycastle/bcprov*.jar; do
+            if [ -f "$path" ]; then
+              BCPROV_JAR="$path"
+              break
+            fi
+          done
+
+          # Also check if there's a symlink
+          if [ -z "$BCPROV_JAR" ] && [ -L /usr/share/java/bcprov-ext.jar ]; then
+            BCPROV_JAR=$(readlink -f /usr/share/java/bcprov-ext.jar 2>/dev/null || true)
+          fi
+
+          if [ -n "$BCPROV_JAR" ] && [ -f "$BCPROV_JAR" ]; then
+            echo "✓ BouncyCastle installed: $BCPROV_JAR"
+            # Create a symlink at the expected location if needed
+            if [ ! -f /usr/share/java/bcprov.jar ]; then
+              ln -sf "$BCPROV_JAR" /usr/share/java/bcprov.jar
+            fi
           else
-            echo "::warning::BouncyCastle not found, will try alternate location"
+            echo "::warning::BouncyCastle not found after install attempt"
           fi
 
       - name: Cache apkeep
