@@ -313,43 +313,24 @@ jobs:
           distribution: temurin
           java-version: "17" # any current LTS JRE is fine to run the CLI [9](https://aur.archlinux.org/packages/morphe-cli)
 
-      - name: Install dependencies
+      - name: Verify dependencies
         id: deps
         run: |
           set -euo pipefail
 
-          echo "::notice::Checking available tools..."
-          uname -a
-          cat /etc/os-release || true
+          echo "::notice::Verifying available tools..."
 
-          # Check what's available
-          echo "Checking PATH..."
-          echo "$PATH"
-          which curl jq unzip 2>&1 || echo "Some tools not found"
+          # Check for required tools (ubuntu-latest has these pre-installed)
+          for tool in curl jq unzip; do
+            if command -v "$tool" &> /dev/null; then
+              echo "✓ $tool found: $(which $tool)"
+            else
+              echo "::error::$tool not found"
+              exit 1
+            fi
+          done
 
-          # Try to install if not available
-          if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
-            echo "::notice::Installing system dependencies via apt..."
-            export DEBIAN_FRONTEND=noninteractive
-
-            echo "Running apt-get update..."
-            apt-get update -y 2>&1 || echo "apt-get update returned: $?"
-
-            echo "Running apt-get install..."
-            apt-get install -y jq curl unzip libbcprov-java 2>&1 || echo "apt-get install returned: $?"
-          fi
-
-          # Verify curl and jq are available
-          if ! command -v curl &> /dev/null; then
-            echo "::error::curl is not available after install attempt"
-            exit 1
-          fi
-          if ! command -v jq &> /dev/null; then
-            echo "::error::jq is not available after install attempt"
-            exit 1
-          fi
-
-          echo "::notice::Dependencies installed successfully"
+          echo "::notice::All dependencies verified"
 
       - name: Cache apkeep
         id: cache-apkeep
