@@ -455,8 +455,9 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
       await waitForCloudflare();
     }
 
-    // Find download link
-    const downloadLink = await page.$('a.downloadButton, a[class*="downloadButton"], a.btn.btn-flat.downloadButton');
+    // Skip anchor links (#all_versions) - these are not actual downloads
+    // Find download link that is NOT an anchor
+    const downloadLink = await page.$('a.downloadButton[href^="/apk/"], a[class*="downloadButton"][href^="/apk/"], a.btn[href^="/apk/"]');
     if (downloadLink) {
       const href = await downloadLink.getAttribute("href");
       console.error(`[apkmirror] Found download link: ${href}`);
@@ -467,7 +468,7 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
     // Try to find version-specific link
     const versionSlug = version.replace(/\./g, "-");
     let versionLinks = await page.$$eval('a[href*="release"]', links =>
-      links.map(l => l.href).filter(h => h.includes(versionSlug))
+      links.map(l => l.href).filter(h => h.includes(versionSlug) && !h.includes("#"))
     );
 
     console.error(`[apkmirror] Found ${versionLinks.length} version links for exact version`);
@@ -476,9 +477,9 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
     if (versionLinks.length === 0) {
       console.error(`[apkmirror] Exact version not found, trying to get latest available version...`);
 
-      // Get the first available version from the page
+      // Get the first available version from the page (exclude anchor links)
       const allVersionLinks = await page.$$eval('a[href*="release"]', links =>
-        links.map(l => l.href).filter(h => h.includes("/youtube/") && h.includes("-release"))
+        links.map(l => l.href).filter(h => h.includes("/youtube/") && h.includes("-release") && !h.includes("#"))
       );
 
       if (allVersionLinks.length > 0) {
