@@ -976,42 +976,52 @@ async function downloadWithPlaywright(url, outputDir, packageId, version) {
       }
     }
 
-    // If we captured the download URL, use curl to download
+    // If we captured the download URL, try to download using browser cookies
+    // This keeps the session alive and should work with the time-sensitive URL
     console.error(`[apkmirror] Final button clicked: ${clickedFinalButton}, finalDownloadUrl: ${finalDownloadUrl ? 'set' : 'null'}`);
     if (finalDownloadUrl) {
-      console.error(`[apkmirror] Using captured download URL for curl: ${finalDownloadUrl}`);
+      console.error(`[apkmirror] Attempting download with browser cookies: ${finalDownloadUrl}`);
       try {
-        const filename = `${packageId.replace(/\./g, "_")}_v${version}.apk`;
-        const downloadPath = path.join(outputDir, filename);
+        // Get cookies from the current context
+        const cookies = await context.cookies();
+        const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
 
-        await new Promise((resolve, reject) => {
-          const curl = execFile("curl", [
-            "-L",
-            "-o", downloadPath,
-            "-A", UA,
-            "-H", "Accept: */*",
-            "-H", "Referer: " + url,
-            finalDownloadUrl
-          ], { timeout: 300000 }, (error) => {
-            if (error) reject(error);
-            else resolve();
-          });
+        // Download using fetch with cookies
+        const filename = `${packageId.replace(/\./g, "_")}_v${version}.apk`;
+        const downloadPath = path.join(tempDir, filename);
+
+        const response = await fetch(finalDownloadUrl, {
+          headers: {
+            'User-Agent': UA,
+            'Accept': '*/*',
+            'Cookie': cookieHeader,
+            'Referer': url
+          }
         });
 
-        if (fs.existsSync(downloadPath)) {
+        if (response.ok) {
+          const buffer = await response.arrayBuffer();
+          fs.writeFileSync(downloadPath, Buffer.from(buffer));
+
           const stats = fs.statSync(downloadPath);
-          if (stats.size > 1000000) { // At least 1MB
-            console.error(`[apkmirror] Downloaded via captured URL: ${downloadPath} (${stats.size} bytes)`);
+          if (stats.size > 1000000) {
+            console.error(`[apkmirror] Downloaded via fetch with cookies: ${downloadPath} (${stats.size} bytes)`);
+
+            // Copy to output dir
+            const finalPath = path.join(outputDir, filename);
+            fs.copyFileSync(downloadPath, finalPath);
+
             await browser.close();
-            // Save to cache
-            const cachePath = saveToCache(packageId, version, downloadPath);
-            return { success: true, path: downloadPath, filename };
+            const cachePath = saveToCache(packageId, version, finalPath);
+            return { success: true, path: finalPath, filename };
           } else {
-            console.error(`[apkmirror] Downloaded file too small (${stats.size} bytes),可能是HTML错误页面`);
+            console.error(`[apkmirror] Downloaded file too small (${stats.size} bytes)`);
           }
+        } else {
+          console.error(`[apkmirror] Fetch failed: ${response.status} ${response.statusText}`);
         }
       } catch (e) {
-        console.error(`[apkmirror] Captured URL download failed: ${e.message}`);
+        console.error(`[apkmirror] Fetch with cookies failed: ${e.message}`);
       }
     }
 
