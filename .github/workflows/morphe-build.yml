@@ -317,11 +317,11 @@ jobs:
         id: deps
         run: |
           set -euo pipefail
-          
+
           echo "::notice::Installing system dependencies..."
-          sudo apt-get update -y
-          sudo apt-get install -y jq curl unzip libbcprov-java
-          
+          apt-get update -y
+          apt-get install -y jq curl unzip libbcprov-java
+
           # Verify curl and jq are available
           if ! command -v curl &> /dev/null; then
             echo "::error::curl is not available"
@@ -331,7 +331,7 @@ jobs:
             echo "::error::jq is not available"
             exit 1
           fi
-          
+
           echo "::notice::Dependencies installed successfully"
 
       - name: Cache apkeep
