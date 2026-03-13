@@ -339,6 +339,22 @@ jobs:
           
           echo "::notice::Dependencies installed successfully"
 
+      - name: Cache apkeep
+        id: cache-apkeep
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/apkeep
+          key: apkeep-${{ runner.os }}-v1
+
+      - name: Install apkeep
+        if: steps.cache-apkeep.outputs.cache-hit != 'true'
+        run: |
+          APKEEP_VERSION="0.18.0"
+          APKEEP_URL="https://github.com/EFForg/apkeep/releases/download/${APKEEP_VERSION}/apkeep-x86_64-unknown-linux-gnu"
+          curl -sSL "$APKEEP_URL" -o /usr/local/bin/apkeep
+          chmod +x /usr/local/bin/apkeep
+          apkeep --version
+
       - name: Prepare dirs
         run: |
           mkdir -p "$TOOLS_DIR" "$APKS_DIR" "$OUT_DIR"
@@ -788,29 +804,34 @@ jobs:
             PRELOADED_APK=$(find "$TOOLS_DIR" -type f -name "*.$ext" -printf '%p\n' 2>/dev/null | head -n1 || true)
             [ -n "$PRELOADED_APK" ] && break
           done
-          
+
           if [ -n "$PRELOADED_APK" ] && [ -f "$PRELOADED_APK" ]; then
             echo "::notice::Using pre-downloaded APK from check-versions: $PRELOADED_APK"
             cp "$PRELOADED_APK" "$APKS_DIR/"
             DOWNLOAD_SUCCESS=true
-          elif [ -n "$MANUAL_URL" ]; then
-            # Try Playwright first (bypasses Cloudflare)
-            echo "::notice::Downloading via Playwright..."
-            if download_with_playwright "$MANUAL_URL"; then
+          else
+            # Try unified-downloader.js to download the specific version
+            echo "::notice::No pre-downloaded APK found, using unified-downloader for $APP_ID version $TARGET_VERSION..."
+            if RESULT=$(node .github/scripts/unified-downloader.js "$APP_ID" "$TARGET_VERSION" "$APKS_DIR" 2>&1); then
+              echo "::notice::unified-downloader succeeded: $RESULT"
               DOWNLOAD_SUCCESS=true
-            fi
-            
-            # Fallback to curl if Playwright fails
-            if [ "$DOWNLOAD_SUCCESS" = false ]; then
-              echo "::notice::Playwright download failed, trying curl fallback..."
-              if download_with_curl "$MANUAL_URL"; then
-                DOWNLOAD_SUCCESS=true
+            else
+              echo "::warning::unified-downloader failed: $RESULT"
+
+              # Fallback to manual URL if provided
+              if [ -n "$MANUAL_URL" ]; then
+                echo "::notice::Trying manual URL fallback..."
+                if download_with_playwright "$MANUAL_URL"; then
+                  DOWNLOAD_SUCCESS=true
+                elif download_with_curl "$MANUAL_URL"; then
+                  DOWNLOAD_SUCCESS=true
+                fi
               fi
             fi
           fi
 
           if [ "$DOWNLOAD_SUCCESS" = false ]; then
-            echo "::error::No manual URL configured for $APP_ID $TARGET_VERSION."
+            echo "::error::No APK could be downloaded for $APP_ID version $TARGET_VERSION."
             exit 1
           fi
 
