@@ -319,25 +319,33 @@ jobs:
           set -euo pipefail
 
           echo "::notice::Checking available tools..."
+          uname -a
+          cat /etc/os-release || true
 
           # Check what's available
-          which curl jq unzip 2>&1 || true
+          echo "Checking PATH..."
+          echo "$PATH"
+          which curl jq unzip 2>&1 || echo "Some tools not found"
 
-          # Try to install if not available - using apt with timeout
+          # Try to install if not available
           if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
             echo "::notice::Installing system dependencies via apt..."
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update -y
-            apt-get install -y jq curl unzip libbcprov-java
+
+            echo "Running apt-get update..."
+            apt-get update -y 2>&1 || echo "apt-get update returned: $?"
+
+            echo "Running apt-get install..."
+            apt-get install -y jq curl unzip libbcprov-java 2>&1 || echo "apt-get install returned: $?"
           fi
 
           # Verify curl and jq are available
           if ! command -v curl &> /dev/null; then
-            echo "::error::curl is not available"
+            echo "::error::curl is not available after install attempt"
             exit 1
           fi
           if ! command -v jq &> /dev/null; then
-            echo "::error::jq is not available"
+            echo "::error::jq is not available after install attempt"
             exit 1
           fi
 
