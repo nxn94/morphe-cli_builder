@@ -503,7 +503,7 @@ async function downloadWithApkmirror(packageId, version, outputDir) {
   console.error(`[apkmirror] Resolved URL: ${downloadUrl}`);
 
   // Download using Playwright
-  const result = await downloadWithPlaywright(downloadUrl, outputDir);
+  const result = await downloadWithPlaywright(downloadUrl, outputDir, packageId, version);
 
   if (!result.success) {
     throw new Error("Playwright download failed");
@@ -669,7 +669,7 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
  * Improved to handle APKMirror's multi-step download process:
  * 1. Initial download button → 2. Variant selection → 3. Final download
  */
-async function downloadWithPlaywright(url, outputDir) {
+async function downloadWithPlaywright(url, outputDir, packageId, version) {
   const tempDir = path.join(outputDir, ".playwright-temp");
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
@@ -717,8 +717,19 @@ async function downloadWithPlaywright(url, outputDir) {
 
   const page = await context.newPage();
 
-  // Set up download handler FIRST before navigation
-  const downloadPromise = context.waitForEvent("download", { timeout: 180000 }); // 3 min timeout for download
+  // Set up network interception to detect download URLs
+  let downloadUrlFromNetwork = null;
+  page.on("response", async (response) => {
+    const headers = response.headers();
+    const contentDisposition = headers["content-disposition"];
+    if (contentDisposition && contentDisposition.includes("attachment")) {
+      const url = response.url();
+      console.error(`[apkmirror] Detected download via network: ${url}`);
+      downloadUrlFromNetwork = url;
+    }
+  });
+
+  // Don't set up download handler yet - we'll do that after trying direct URL extraction
 
   try {
     console.error(`[apkmirror] Navigating to: ${url}`);
@@ -784,6 +795,45 @@ async function downloadWithPlaywright(url, outputDir) {
     ];
 
     let clickedFirstButton = false;
+    let downloadUrl = null;
+
+    // First, try to extract download URL directly from the page
+    // This is more reliable than clicking through the UI
+    console.error(`[apkmirror] Trying to extract download URL directly...`);
+
+    // Look for download.php links - APKMirror uses these for actual downloads
+    const downloadPhpLinks = await page.$$eval('a[href*="download.php"]', links =>
+      links.map(l => l.href).filter(h => h.includes('download.php'))
+    );
+
+    if (downloadPhpLinks.length > 0) {
+      console.error(`[apkmirror] Found download.php link directly: ${downloadPhpLinks[0]}`);
+      downloadUrl = downloadPhpLinks[0];
+    }
+
+    // Also check for other download patterns
+    if (!downloadUrl) {
+      const otherDownloadLinks = await page.$$eval('a[href*="/download/"]', links =>
+        links.map(l => l.href).filter(h => !h.includes('#'))
+      );
+      if (otherDownloadLinks.length > 0) {
+        console.error(`[apkmirror] Found direct download link: ${otherDownloadLinks[0]}`);
+        downloadUrl = otherDownloadLinks[0];
+      }
+    }
+
+    // If we found a direct download URL, just log it - we'll use button clicking instead
+    // The URL we extracted is time-sensitive and won't work with curl
+    if (downloadUrl) {
+      console.error(`[apkmirror] Found download URL but will use button clicking for proper session handling`);
+    }
+
+    // Set up download handler for button clicking fallback (only needed if direct URL didn't work)
+    // Also set up URL change handler to track redirects
+    const downloadPromise = context.waitForEvent("download", { timeout: 180000 }); // 3 min timeout for download
+    let currentPageUrl = url;
+
+    // Fall back to button clicking if direct URL extraction didn't work
     for (const selector of firstDownloadSelectors) {
       try {
         const btn = await page.$(selector);
@@ -808,8 +858,21 @@ async function downloadWithPlaywright(url, outputDir) {
     await page.waitForTimeout(5000);
 
     // Check current URL - if changed, we might be on variant selection
-    const currentUrl = page.url();
+    let currentUrl = page.url();
     console.error(`[apkmirror] Current URL after first click: ${currentUrl}`);
+
+    // Handle Google vignette redirect - strip the fragment and reload if needed
+    if (currentUrl.includes('#google_vignette') || currentUrl.includes('google_vignette')) {
+      console.error(`[apkmirror] Detected Google vignette redirect, cleaning URL...`);
+      currentUrl = currentUrl.split('#')[0];
+      try {
+        await page.goto(currentUrl, { timeout: 60000, waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(3000);
+        console.error(`[apkmirror] Reloaded clean URL: ${currentUrl}`);
+      } catch (e) {
+        console.error(`[apkmirror] Reload failed: ${e.message}`);
+      }
+    }
 
     // If URL changed to a new page, we might need to click again
     if (currentUrl !== url) {
@@ -829,18 +892,83 @@ async function downloadWithPlaywright(url, outputDir) {
     ];
 
     let clickedFinalButton = false;
+    let finalDownloadUrl = null;
     for (const selector of finalDownloadSelectors) {
       try {
         const btn = await page.$(selector);
         if (btn) {
           const btnText = await btn.textContent();
+
+          // Skip scroll buttons
+          if (btnText && btnText.includes('Scroll to available')) {
+            console.error(`[apkmirror] Skipping scroll button: ${selector}`);
+            continue;
+          }
+
           console.error(`[apkmirror] Clicking final download button: ${selector} (text: ${btnText})`);
+
+          // Track URL before click
+          const urlBeforeClick = page.url();
+
           await btn.click({ timeout: 10000 });
           clickedFinalButton = true;
+
+          // Wait for potential URL change or download
+          await page.waitForTimeout(3000);
+
+          // Check if URL changed - this is the actual download URL
+          const urlAfterClick = page.url();
+          if (urlAfterClick !== urlBeforeClick) {
+            console.error(`[apkmirror] URL changed after click: ${urlAfterClick}`);
+            // This is the download URL - capture it
+            if (urlAfterClick.includes('/download/')) {
+              finalDownloadUrl = urlAfterClick;
+            }
+          }
+
           break;
         }
       } catch (e) {
         // Continue to next selector
+      }
+    }
+
+    // If we captured the download URL, use curl to download
+    console.error(`[apkmirror] Final button clicked: ${clickedFinalButton}, finalDownloadUrl: ${finalDownloadUrl ? 'set' : 'null'}`);
+    if (finalDownloadUrl) {
+      console.error(`[apkmirror] Using captured download URL for curl: ${finalDownloadUrl}`);
+      try {
+        const filename = `${packageId.replace(/\./g, "_")}_v${version}.apk`;
+        const downloadPath = path.join(outputDir, filename);
+
+        await new Promise((resolve, reject) => {
+          const curl = execFile("curl", [
+            "-L",
+            "-o", downloadPath,
+            "-A", UA,
+            "-H", "Accept: */*",
+            "-H", "Referer: " + url,
+            finalDownloadUrl
+          ], { timeout: 300000 }, (error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+
+        if (fs.existsSync(downloadPath)) {
+          const stats = fs.statSync(downloadPath);
+          if (stats.size > 1000000) { // At least 1MB
+            console.error(`[apkmirror] Downloaded via captured URL: ${downloadPath} (${stats.size} bytes)`);
+            await browser.close();
+            // Save to cache
+            const cachePath = saveToCache(packageId, version, downloadPath);
+            return { success: true, path: downloadPath, filename };
+          } else {
+            console.error(`[apkmirror] Downloaded file too small (${stats.size} bytes),可能是HTML错误页面`);
+          }
+        }
+      } catch (e) {
+        console.error(`[apkmirror] Captured URL download failed: ${e.message}`);
       }
     }
 
@@ -866,29 +994,96 @@ async function downloadWithPlaywright(url, outputDir) {
     try {
       download = await downloadPromise;
     } catch (downloadError) {
-      console.error(`[apkmirror] Download event timed out, checking page state...`);
+      console.error(`[apkmirror] Download event timed out, trying to extract download URL...`);
 
-      // Take a screenshot for debugging (save to temp)
-      try {
-        const debugPath = path.join(tempDir, "debug.png");
-        await page.screenshot({ path: debugPath });
-        console.error(`[apkmirror] Debug screenshot saved to: ${debugPath}`);
-      } catch (e) { /* ignore */ }
+      // First check if we captured a download URL via network interception
+      if (downloadUrlFromNetwork) {
+        console.error(`[apkmirror] Using download URL from network interception: ${downloadUrlFromNetwork}`);
+        try {
+          const filename = `${packageId.replace(/\./g, "_")}_v${version}.apk`;
+          const downloadPath = path.join(outputDir, filename);
 
-      // Check if there's a countdown or manual download link
-      const pageContent = await page.content();
-      if (pageContent.includes("countdown") || pageContent.includes("seconds")) {
-        console.error(`[apkmirror] Countdown detected, waiting...`);
-        await page.waitForTimeout(30000); // Wait for countdown
-        // Try to find and click download again
-        const retryBtn = await page.$("a.downloadButton, a:has-text('Download')");
-        if (retryBtn) {
-          console.error(`[apkmirror] Clicking download after countdown...`);
-          const newDownloadPromise = context.waitForEvent("download", { timeout: 120000 });
-          await retryBtn.click();
-          download = await newDownloadPromise;
+          await new Promise((resolve, reject) => {
+            const curl = execFile("curl", [
+              "-L",
+              "-o", downloadPath,
+              "-A", UA,
+              "-H", "Accept: */*",
+              "-H", "Referer: " + url,
+              downloadUrlFromNetwork
+            ], { timeout: 300000 }, (error) => {
+              if (error) reject(error);
+              else resolve();
+            });
+          });
+
+          if (fs.existsSync(downloadPath)) {
+            const stats = fs.statSync(downloadPath);
+            if (stats.size > 1000000) { // At least 1MB
+              console.error(`[apkmirror] Downloaded via network interception: ${downloadPath} (${stats.size} bytes)`);
+              await browser.close();
+              return { success: true, path: downloadPath, filename };
+            }
+          }
+        } catch (e) {
+          console.error(`[apkmirror] Network interception download failed: ${e.message}`);
         }
-      } else {
+      }
+
+      // Try to extract the download URL directly from the page
+      try {
+        // Look for the actual download link in the page
+        const downloadLink = await page.$('a[href*="/download/"]');
+        if (downloadLink) {
+          const href = await downloadLink.getAttribute('href');
+          console.error(`[apkmirror] Found download URL in page: ${href}`);
+
+          // Download using curl instead
+          const filename = `${path.basename(outputDir)}_download.apk`;
+          const downloadPath = path.join(outputDir, filename);
+
+          await new Promise((resolve, reject) => {
+            const curl = execFile("curl", [
+              "-L",
+              "-o", downloadPath,
+              "-A", UA,
+              "-H", "Accept: */*",
+              "-H", "Referer: " + page.url(),
+              href
+            ], { timeout: 300000 }, (error) => {
+              if (error) reject(error);
+              else resolve();
+            });
+          });
+
+          if (fs.existsSync(downloadPath)) {
+            const stats = fs.statSync(downloadPath);
+            console.error(`[apkmirror] Downloaded via extracted URL: ${downloadPath} (${stats.size} bytes)`);
+            return { success: true, path: downloadPath, filename: path.basename(downloadPath) };
+          }
+        }
+      } catch (extractError) {
+        console.error(`[apkmirror] Failed to extract URL: ${extractError.message}`);
+      }
+
+      // Fallback: try to find countdown and wait
+      try {
+        const pageContent = await page.content();
+        if (pageContent.includes("countdown") || pageContent.includes("seconds")) {
+          console.error(`[apkmirror] Countdown detected, waiting...`);
+          await page.waitForTimeout(30000);
+          const retryBtn = await page.$("a.downloadButton, a:has-text('Download')");
+          if (retryBtn) {
+            const newDownloadPromise = context.waitForEvent("download", { timeout: 120000 });
+            await retryBtn.click();
+            download = await newDownloadPromise;
+          }
+        }
+      } catch (e) {
+        // Ignore
+      }
+
+      if (!download) {
         throw downloadError;
       }
     }
@@ -970,7 +1165,7 @@ async function download(packageId, version, outputDir) {
     // If URL is APKMirror, use Playwright (required for their JavaScript-based downloads)
     if (url.includes("apkmirror.com")) {
       try {
-        return await downloadWithPlaywright(url, outputDir);
+        return await downloadWithPlaywright(url, outputDir, packageId, version);
       } catch (e) {
         console.error(`[direct] Playwright failed: ${e.message}`);
         throw e;
