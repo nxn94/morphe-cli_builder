@@ -478,9 +478,11 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
       console.error(`[apkmirror] Exact version not found, trying to get latest available version...`);
 
       // Get the first available version from the page (exclude anchor links)
-      const allVersionLinks = await page.$$eval('a[href*="release"]', links =>
-        links.map(l => l.href).filter(h => h.includes("/youtube/") && h.includes("-release") && !h.includes("#"))
-      );
+      // Use the correct path for this package (e.g., /youtube/ or /youtube-music/)
+      const searchPath = "/" + apkmirrorPath + "/";
+      const allVersionLinks = await page.$$eval('a[href*="release"]', (links, search) =>
+        links.map(l => l.href).filter(h => h.includes(search) && h.includes("-release") && !h.includes("#"))
+      , searchPath);
 
       if (allVersionLinks.length > 0) {
         console.error(`[apkmirror] Found ${allVersionLinks.length} available versions, using first one`);
