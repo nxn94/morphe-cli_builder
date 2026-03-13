@@ -681,12 +681,8 @@ async function download(packageId, version, outputDir) {
     console.error(`[apkeep] Failed: ${e.message}`);
   }
 
-  // Step 3: Try aurora-store - second choice
-  try {
-    return await downloadWithAurora(packageId, version, outputDir);
-  } catch (e) {
-    console.error(`[aurora] Failed: ${e.message}`);
-  }
+  // Step 3: Skip aurora-store (no working CLI available)
+  console.error(`[aurora] Skipping: aurora-store CLI not available`);
 
   // Step 4: Try APKMirror with Playwright - last resort
   try {

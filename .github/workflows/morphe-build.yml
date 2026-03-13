@@ -164,14 +164,6 @@ jobs:
           chmod +x /usr/local/bin/apkeep
           apkeep --version
 
-      - name: Install aurora-store
-        if: steps.version-check.outputs.should-build == 'true'
-        run: |
-          # aurora-droid (aurad) - free, no auth needed
-          curl -sSL https://github.com/Whyorean/AURAD/releases/download/nightly/aurad -o /usr/local/bin/aurad
-          chmod +x /usr/local/bin/aurad
-          ln -sf /usr/local/bin/aurad /usr/local/bin/aurora-store
-
       - name: Resolve latest APK versions from APKMirror
         if: steps.version-check.outputs.should-build == 'true'
         run: |
@@ -354,14 +346,6 @@ jobs:
           curl -sSL "$APKEEP_URL" -o /usr/local/bin/apkeep
           chmod +x /usr/local/bin/apkeep
           apkeep --version
-
-      - name: Install aurora-store
-        run: |
-          # Install aurora-droid (aurad) - free, no auth needed
-          curl -sSL https://github.com/Whyorean/AURAD/releases/download/nightly/aurad -o /usr/local/bin/aurad
-          chmod +x /usr/local/bin/aurad
-          ln -sf /usr/local/bin/aurad /usr/local/bin/aurora-store
-          aurad --version || true
 
       - name: Prepare dirs
         run: |
