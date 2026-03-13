@@ -336,32 +336,25 @@ jobs:
         run: |
           set -euo pipefail
           echo "::notice::Installing BouncyCastle for APK signing..."
-          # Try multiple approaches
-          apt-get update -qq 2>&1 || true
-          apt-get install -y libbcprov-java 2>&1 || true
 
-          # Check multiple possible locations
-          BCPROV_JAR=""
-          for path in /usr/share/java/bcprov.jar /usr/share/java/bcprov*.jar /usr/share/java/bouncycastle/bcprov*.jar; do
-            if [ -f "$path" ]; then
-              BCPROV_JAR="$path"
-              break
-            fi
-          done
+          # Create a directory for the JAR
+          mkdir -p /tmp/bouncycastle
 
-          # Also check if there's a symlink
-          if [ -z "$BCPROV_JAR" ] && [ -L /usr/share/java/bcprov-ext.jar ]; then
-            BCPROV_JAR=$(readlink -f /usr/share/java/bcprov-ext.jar 2>/dev/null || true)
-          fi
+          # Download BouncyCastle directly (it's a well-known stable JAR)
+          BCOPS_VERSION="1.77"
+          BCOPS_URL="https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk18on/$BCOPS_VERSION/bcprov-jdk18on-$BCOPS_VERSION.jar"
+          BCPROV_JAR="/tmp/bouncycastle/bcprov.jar"
 
-          if [ -n "$BCPROV_JAR" ] && [ -f "$BCPROV_JAR" ]; then
-            echo "✓ BouncyCastle installed: $BCPROV_JAR"
-            # Create a symlink at the expected location if needed
-            if [ ! -f /usr/share/java/bcprov.jar ]; then
-              ln -sf "$BCPROV_JAR" /usr/share/java/bcprov.jar
-            fi
+          echo "Downloading BouncyCastle from Maven Central..."
+          if curl -sSL "$BCOPS_URL" -o "$BCPROV_JAR"; then
+            echo "✓ BouncyCastle downloaded: $BCPROV_JAR"
+            # Also copy to where the signing step expects it
+            mkdir -p /usr/share/java
+            cp "$BCPROV_JAR" /usr/share/java/bcprov.jar
+            echo "✓ Copied to /usr/share/java/bcprov.jar"
           else
-            echo "::warning::BouncyCastle not found after install attempt"
+            echo "::error::Failed to download BouncyCastle"
+            exit 1
           fi
 
       - name: Cache apkeep
