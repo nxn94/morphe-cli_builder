@@ -26,12 +26,38 @@ const APK_MIRROR_API_PASS = "rm5rcfruUjKy04sMpyMPJXW8";
 // Cache directory
 const CACHE_DIR = path.join(os.homedir(), ".cache", "auto-morphe-builder", "apks");
 
+// URL cache directory - stores resolved URLs as JSON
+const URL_CACHE_DIR = path.join(os.homedir(), ".cache", "auto-morphe-builder", "urls");
+
 // APKMirror paths mapping
 const APK_MIRROR_PATHS = {
   "com.google.android.youtube": "google-inc/youtube",
   "com.google.android.apps.youtube.music": "google-inc/youtube-music",
   "com.reddit.frontpage": "redditinc/reddit"
 };
+
+/**
+ * Check URL cache for a package version
+ * @returns {object|null} Cache entry or null if not found/invalid
+ */
+function getCachedUrl(packageId, version) {
+  const cacheDir = path.join(URL_CACHE_DIR, packageId);
+  const cacheFile = path.join(cacheDir, `${version}.json`);
+
+  if (!fs.existsSync(cacheFile)) {
+    console.error(`[url-cache] Miss: ${packageId} v${version}`);
+    return null;
+  }
+
+  try {
+    const cacheData = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    console.error(`[url-cache] Hit: ${packageId} v${version} (source: ${cacheData.source}, downloads: ${cacheData.downloads})`);
+    return cacheData;
+  } catch (e) {
+    console.error(`[url-cache] Error reading cache: ${e.message}`);
+    return null;
+  }
+}
 
 /**
  * Parse command-line arguments
