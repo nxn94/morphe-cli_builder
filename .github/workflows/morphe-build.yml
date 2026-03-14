@@ -987,6 +987,30 @@ jobs:
             for apk_file in "$APKS_DIR"/*.{xapk,apkm,apks}; do
               [ -f "$apk_file" ] || continue
               echo "::notice::Checking split package: $(basename "$apk_file")"
+
+              # For split packages, extract base APK and validate version before merge
+              if command -v aapt &> /dev/null; then
+                # Try to find the base APK inside the split package
+                temp_dir="$RUNNER_TEMP/split_validate_$$"
+                mkdir -p "$temp_dir"
+                if unzip -q "$apk_file" "base.apk" -d "$temp_dir" 2>/dev/null; then
+                  base_apk="$temp_dir/base.apk"
+                  if [ -f "$base_apk" ]; then
+                    split_info=$(aapt dump badging "$base_apk" 2>/dev/null || echo "")
+                    split_version=$(echo "$split_info" | grep -oP "versionName='\K[^']+" | head -n1 || true)
+                    echo "::debug::Split package base APK version: $split_version (expected: $TARGET_VERSION)"
+                    if [ -n "$split_version" ] && [ "$split_version" != "$TARGET_VERSION" ]; then
+                      echo "::warning::Split package has wrong version: $split_version (expected $TARGET_VERSION) - removing"
+                      rm -f "$apk_file"
+                      rm -rf "$temp_dir"
+                      continue
+                    fi
+                    echo "::notice::Split package version validated: $split_version"
+                  fi
+                fi
+                rm -rf "$temp_dir"
+              fi
+
               # For split packages, we'll validate after merge
               APK_VALID=true
               break
@@ -1047,6 +1071,17 @@ jobs:
               APK_PATH="$APKS_DIR/${{ matrix.appId }}.apk"
               if merge_split_package_with_apkeditor "$APK_CANDIDATE" "$APK_PATH"; then
                 echo "::notice::Merged APK created: $APK_PATH"
+                # Validate merged APK version
+                echo "::notice::Validating merged APK version..."
+                if command -v aapt &> /dev/null; then
+                  merged_info=$(aapt dump badging "$APK_PATH" 2>/dev/null || echo "")
+                  merged_version=$(echo "$merged_info" | grep -oP "versionName='\K[^']+" | head -n1 || true)
+                  echo "::debug::Merged APK version: $merged_version (expected: $TARGET_VERSION)"
+                  if [ -n "$merged_version" ] && [ "$merged_version" != "$TARGET_VERSION" ]; then
+                    echo "::error::Merged APK has wrong version: $merged_version (expected $TARGET_VERSION)"
+                    exit 1
+                  fi
+                fi
               else
                 echo "::warning::APKEditor merge failed; falling back to direct APK extraction."
                 XAPK_TMP="$RUNNER_TEMP/xapk_${{ matrix.name }}"
