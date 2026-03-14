@@ -235,18 +235,35 @@ async function downloadWithApkeep(packageId, version, outputDir) {
     specificVersionFailed = true;
   }
 
-  // If specific version failed, return failure so caller can try APKMirror
+  // If specific version failed, try latest version as fallback
   if (specificVersionFailed || !findApkFile(outputDir)) {
-    // Clear any partial downloads
-    const files = fs.readdirSync(outputDir);
-    for (const file of files) {
-      if (file !== '.playwright-temp') {
-        try {
-          fs.unlinkSync(path.join(outputDir, file));
-        } catch (e) { /* ignore */ }
+    console.error(`[apkeep] Trying latest version as fallback...`);
+    try {
+      // Clear any partial downloads
+      const files = fs.readdirSync(outputDir);
+      for (const file of files) {
+        if (file !== '.playwright-temp') {
+          try {
+            fs.unlinkSync(path.join(outputDir, file));
+          } catch (e) { /* ignore */ }
+        }
       }
+
+      // Try without specifying version (gets latest)
+      await runCommand("apkeep", ["-a", packageId, "-d", "apk-pure", outputDir], {
+        timeout: 300000
+      });
+      const apkPath = findApkFile(outputDir);
+      if (apkPath) {
+        downloadedVersion = "latest";
+        console.error(`[apkeep] Downloaded latest version: ${downloadedVersion}`);
+      } else {
+        throw new Error("No APK found even with latest version");
+      }
+    } catch (e) {
+      console.error(`[apkeep] Latest version also failed: ${e.message}`);
+      throw new Error(`Specific version ${version} not available on APKPure, and latest also failed`);
     }
-    throw new Error(`Specific version ${version} not available on APKPure`);
   }
 
   // Find the downloaded file
@@ -1163,7 +1180,41 @@ async function downloadWithPlaywright(url, outputDir, packageId, version) {
  * Main download function with fallback chain
  */
 async function download(packageId, version, outputDir) {
-  // Step 1: Check patches.json for existing URL
+  // Step 0: Check cache FIRST (fastest)
+  const cachedPath = checkCache(packageId, version);
+  if (cachedPath && fs.existsSync(cachedPath)) {
+    // Copy from cache to output dir
+    const filename = path.basename(cachedPath);
+    const outputPath = path.join(outputDir, filename);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    fs.copyFileSync(cachedPath, outputPath);
+    console.error(`[cache] Copied from cache: ${outputPath}`);
+
+    console.log(JSON.stringify({
+      success: true,
+      filepath: outputPath,
+      version: version,
+      source: "cache",
+      url: cachedPath
+    }, null, 2));
+    return;
+  }
+
+  // Step 1: Try apkeep (APKPure) FIRST - this actually works!
+  try {
+    console.error(`[apkeep] Attempting download for ${packageId} v${version}`);
+    const result = await downloadWithApkeep(packageId, version, outputDir);
+    if (result.success) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+  } catch (e) {
+    console.error(`[apkeep] Failed: ${e.message}`);
+  }
+
+  // Step 2: Check patches.json for existing URL (fallback)
   const existingUrl = loadExistingUrl(packageId, version);
 
   // Check if existing URL is a local file that already exists
@@ -1226,38 +1277,6 @@ async function download(packageId, version, outputDir) {
     }
     // For other URLs, could add curl/wget support here
     throw new Error("Direct download not supported for this URL type");
-  }
-
-  // Step 1: Check cache first
-  const cachedPath = checkCache(packageId, version);
-  if (cachedPath && fs.existsSync(cachedPath)) {
-    // Copy from cache to output dir
-    const filename = path.basename(cachedPath);
-    const outputPath = path.join(outputDir, filename);
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-    fs.copyFileSync(cachedPath, outputPath);
-    console.error(`[cache] Copied from cache: ${outputPath}`);
-
-    console.log(JSON.stringify({
-      success: true,
-      filepath: outputPath,
-      version: version,
-      source: "cache",
-      url: cachedPath
-    }, null, 2));
-    process.exit(0);
-  }
-
-  // Step 2: Try apkeep (APKPure) - first choice
-  try {
-    const result = await downloadWithApkeep(packageId, version, outputDir);
-    // Save to cache
-    saveToCache(packageId, version, result.filepath);
-    return result;
-  } catch (e) {
-    console.error(`[apkeep] Failed: ${e.message}`);
   }
 
   // Step 3: Try APKMirror API
