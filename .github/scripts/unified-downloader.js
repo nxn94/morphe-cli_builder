@@ -307,6 +307,53 @@ async function downloadWithUrl(url, outputDir, packageId, version) {
 }
 
 /**
+ * Resolve URLs from all sources in parallel, first valid wins
+ * @param {string} packageId - Package ID
+ * @param {string} version - Version to resolve
+ * @returns {Promise<object>} { url, source }
+ */
+async function parallelResolveSources(packageId, version) {
+  const sources = [
+    { name: 'apkeep', fn: () => resolveApkeep(packageId, version) },
+    { name: 'apkmirror-api', fn: () => resolveApkmirrorApi(packageId, version) },
+    { name: 'apkmirror', fn: () => resolveApkmirror(packageId, version) },
+  ];
+
+  const SOURCE_TIMEOUT = 60000; // 60 seconds each
+
+  console.error(`[parallel-resolve] Starting parallel resolution for ${packageId} v${version}`);
+  const startTime = Date.now();
+
+  const results = await Promise.allSettled(
+    sources.map(async (source) => {
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`${source.name} timeout`)), SOURCE_TIMEOUT)
+      );
+      return Promise.race([source.fn(), timeout]);
+    })
+  );
+
+  const elapsed = Date.now() - startTime;
+  console.error(`[parallel-resolve] All sources completed in ${elapsed}ms`);
+
+  // Find first successful resolution
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const sourceName = sources[i].name;
+
+    if (result.status === 'fulfilled' && result.value?.url) {
+      console.error(`[parallel-resolve] Winner: ${sourceName}`);
+      return { ...result.value, source: result.value.source || sourceName };
+    }
+
+    const error = result.reason?.message || 'Unknown error';
+    console.error(`[parallel-resolve] ${sourceName} failed: ${error}`);
+  }
+
+  throw new Error('All sources failed to resolve URL');
+}
+
+/**
  * Parse command-line arguments
  */
 function parseArgs() {
