@@ -146,6 +146,14 @@ jobs:
         if: steps.version-check.outputs.should-build == 'true'
         run: npx playwright install chromium
 
+      - name: Upload Playwright browsers for build jobs
+        if: steps.version-check.outputs.should-build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-browsers
+          path: ~/.cache/ms-playwright
+          retention-days: 1
+
       - name: Cache apkeep
         id: cache-apkeep
         if: steps.version-check.outputs.should-build == 'true'
@@ -163,6 +171,14 @@ jobs:
           curl -sSL "$APKEEP_URL" -o /usr/local/bin/apkeep
           chmod +x /usr/local/bin/apkeep
           apkeep --version
+
+      - name: Upload apkeep for build jobs
+        if: steps.version-check.outputs.should-build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apkeep-binary
+          path: /usr/local/bin/apkeep
+          retention-days: 1
 
       - name: Resolve latest APK versions from APKMirror
         if: steps.version-check.outputs.should-build == 'true'
@@ -211,6 +227,18 @@ jobs:
               exit 0
             fi
           fi
+
+      - name: Cache morphe-cli and patches
+        if: steps.version-check.outputs.should-build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            tools/morphe-cli.jar
+            tools/patches.mpp
+          key: morphe-tools-${{ steps.version-check.outputs.patches-version }}-${{ steps.version-check.outputs.cli-version }}
+          restore-keys: |
+            morphe-tools-${{ steps.version-check.outputs.patches-version }}-
+            morphe-tools-
 
       - name: Download APKs using unified-downloader
         id: download-apks
@@ -357,21 +385,42 @@ jobs:
             exit 1
           fi
 
-      - name: Cache apkeep
-        id: cache-apkeep
+      - name: Download apkeep from check-versions
+        uses: actions/download-artifact@v4
+        with:
+          name: apkeep-binary
+          path: /usr/local/bin
+        continue-on-error: true
+
+      - name: Ensure apkeep is executable
+        run: |
+          if [ -f /usr/local/bin/apkeep ]; then
+            chmod +x /usr/local/bin/apkeep
+            apkeep --version
+          else
+            # Download failed, try cache
+            echo "apkeep not found in artifact, will try cache"
+            exit 1
+          fi
+
+      - name: Cache apkeep (fallback)
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/apkeep
           key: apkeep-${{ runner.os }}-v1
 
-      - name: Install apkeep
-        if: steps.cache-apkeep.outputs.cache-hit != 'true'
+      - name: Install apkeep (fallback)
         run: |
-          APKEEP_VERSION="0.18.0"
-          APKEEP_URL="https://github.com/EFForg/apkeep/releases/download/${APKEEP_VERSION}/apkeep-x86_64-unknown-linux-gnu"
-          curl -sSL "$APKEEP_URL" -o /usr/local/bin/apkeep
-          chmod +x /usr/local/bin/apkeep
-          apkeep --version
+          if [ -f /usr/local/bin/apkeep ]; then
+            echo "Using existing apkeep"
+          else
+            echo "Installing apkeep..."
+            APKEEP_VERSION="0.18.0"
+            APKEEP_URL="https://github.com/EFForg/apkeep/releases/download/${APKEEP_VERSION}/apkeep-x86_64-unknown-linux-gnu"
+            curl -sSL "$APKEEP_URL" -o /usr/local/bin/apkeep
+            chmod +x /usr/local/bin/apkeep
+            apkeep --version
+          fi
 
       - name: Prepare dirs
         run: |
@@ -392,8 +441,29 @@ jobs:
       - name: Install Playwright
         run: npm install --no-save playwright
 
-      - name: Install Playwright browsers
-        run: npx playwright install chromium
+      - name: Download Playwright browsers from check-versions
+        uses: actions/download-artifact@v4
+        with:
+          name: playwright-browsers
+          path: ~/.cache/ms-playwright
+        continue-on-error: true
+
+      - name: Install Playwright browsers (fallback if artifact not available)
+        run: |
+          if [ ! -d ~/.cache/ms-playwright/chromium-* ]; then
+            npx playwright install chromium
+          fi
+
+      - name: Cache morphe-cli and patches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.TOOLS_DIR }}/morphe-cli.jar
+            ${{ env.TOOLS_DIR }}/patches.mpp
+          key: morphe-tools-${{ needs.check-versions.outputs.patches-version }}-${{ needs.check-versions.outputs.cli-version }}
+          restore-keys: |
+            morphe-tools-${{ needs.check-versions.outputs.patches-version }}-
+            morphe-tools-
 
       - name: Get latest Morphe patches + CLI + APKEditor
         id: morphe
@@ -410,20 +480,31 @@ jobs:
           echo "::notice::Using Morphe channels: patches=${PATCHES_BRANCH}, cli=${CLI_BRANCH}"
           echo "::notice::Resolved Morphe versions: patches=${PATCHES_TAG}, cli=${CLI_TAG}"
 
-          echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
-          gh release download "$PATCHES_TAG" \
-            --repo MorpheApp/morphe-patches \
-            --pattern 'patches-*.mpp' \
-            --dir "$TOOLS_DIR" >/dev/null
-          # also fetch patches-list.json to know available patches by app [3](https://github.com/MorpheApp/morphe-patches)
-          curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
-            -o "$TOOLS_DIR/patches-list.json"
+          # Only download if not already cached
+          if [ ! -f "$TOOLS_DIR/patches.mpp" ]; then
+            echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
+            gh release download "$PATCHES_TAG" \
+              --repo MorpheApp/morphe-patches \
+              --pattern 'patches-*.mpp' \
+              --dir "$TOOLS_DIR" >/dev/null
+            # also fetch patches-list.json to know available patches by app [3](https://github.com/MorpheApp/morphe-patches)
+            curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
+              -o "$TOOLS_DIR/patches-list.json"
+          else
+            echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
+            echo "::notice::Using cached patches.mpp"
+          fi
 
-          echo "cli_tag=$CLI_TAG" >> "$GITHUB_OUTPUT"
-          gh release download "$CLI_TAG" \
-            --repo MorpheApp/morphe-cli \
-            --pattern 'morphe-cli-*-all.jar' \
-            --dir "$TOOLS_DIR" >/dev/null
+          if [ ! -f "$TOOLS_DIR/morphe-cli.jar" ]; then
+            echo "cli_tag=$CLI_TAG" >> "$GITHUB_OUTPUT"
+            gh release download "$CLI_TAG" \
+              --repo MorpheApp/morphe-cli \
+              --pattern 'morphe-cli-*-all.jar' \
+              --dir "$TOOLS_DIR" >/dev/null
+          else
+            echo "cli_tag=$CLI_TAG" >> "$GITHUB_OUTPUT"
+            echo "::notice::Using cached morphe-cli.jar"
+          fi
 
           # Download APKEditor for split APK merge (.xapk/.apkm/.apks -> standalone .apk).
           APKEDITOR_TAG="$(gh release view --repo REAndroid/APKEditor --json tagName -q .tagName)"
