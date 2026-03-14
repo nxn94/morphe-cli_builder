@@ -1207,6 +1207,8 @@ async function download(packageId, version, outputDir) {
     console.error(`[apkeep] Attempting download for ${packageId} v${version}`);
     const result = await downloadWithApkeep(packageId, version, outputDir);
     if (result.success) {
+      // Save to cache for future use
+      saveToCache(packageId, version, result.filepath);
       console.log(JSON.stringify(result, null, 2));
       return;
     }
