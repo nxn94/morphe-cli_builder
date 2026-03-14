@@ -1195,8 +1195,8 @@ jobs:
         id: patch
         run: |
           set -euo pipefail
-          JAR="$(ls -1 $TOOLS_DIR/morphe-cli-*-all.jar | head -n1)"
-          MPP="$(ls -1 $TOOLS_DIR/patches-*.mpp | head -n1)"
+          JAR="$(ls -1 $TOOLS_DIR/morphe-cli*.jar | head -n1)"
+          MPP="$(ls -1 $TOOLS_DIR/patches*.mpp | head -n1)"
           APK="${{ steps.getapk.outputs.apk }}"
           APK_VERSION="${{ steps.getapk.outputs.version }}"
           APK_NORM="${APK#./}"
