@@ -180,6 +180,70 @@ async function resolveApkeep(packageId, version) {
 }
 
 /**
+ * Resolve URL using APKMirror API - returns URL only
+ * @param {string} packageId - Package ID
+ * @param {string} version - Version to resolve
+ * @returns {Promise<object>} { url, source }
+ */
+async function resolveApkmirrorApi(packageId, version) {
+  console.error(`[apkmirror-api-resolve] Resolving ${packageId} v${version}`);
+
+  const apkmirrorPath = APK_MIRROR_PATHS[packageId];
+  if (!apkmirrorPath) {
+    throw new Error(`No APKMirror path for ${packageId}`);
+  }
+
+  // API endpoint to get download info
+  const apiUrl = `https://api.apkmirror.com/wp-json/apkmirror/posts/1/${apkmirrorPath}/${version}`;
+
+  try {
+    const response = await fetch(apiUrl, {
+      headers: {
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}`);
+    }
+
+    const data = await response.json();
+    const downloadUrl = data.downloadUrl;
+
+    if (!downloadUrl) {
+      throw new Error('No download URL in API response');
+    }
+
+    console.error(`[apkmirror-api-resolve] Got URL: ${downloadUrl}`);
+    return { url: downloadUrl, source: 'apkmirror-api' };
+  } catch (e) {
+    console.error(`[apkmirror-api-resolve] Failed: ${e.message}`);
+    throw e;
+  }
+}
+
+/**
+ * Resolve URL using APKMirror Playwright - returns URL only
+ * @param {string} packageId - Package ID
+ * @param {string} version - Version to resolve
+ * @returns {Promise<object>} { url, source }
+ */
+async function resolveApkmirror(packageId, version) {
+  console.error(`[apkmirror-resolve] Resolving ${packageId} v${version}`);
+
+  const apkmirrorPath = APK_MIRROR_PATHS[packageId];
+  if (!apkmirrorPath) {
+    throw new Error(`No APKMirror path for ${packageId}`);
+  }
+
+  // Use existing resolveApkmirrorUrl function (it already exists and returns URL)
+  const url = await resolveApkmirrorUrl(apkmirrorPath, version);
+  console.error(`[apkmirror-resolve] Got URL: ${url}`);
+
+  return { url, source: 'apkmirror' };
+}
+
+/**
  * Parse command-line arguments
  */
 function parseArgs() {
