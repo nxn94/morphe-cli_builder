@@ -98,6 +98,7 @@
     "Disable QUIC protocol": true,
     "Enable debugging": true,
     "Enable exclusive audio playback": true,
+    "Enable forced miniplayer": true,
     "Force original audio": true,
     "GmsCore support": true,
     "Hide 'Get Music Premium'": true,
@@ -112,6 +113,7 @@
     "Hide ads": true
   },
   "com.reddit.frontpage": {
+    "Custom branding name for Reddit": true,
     "Disable screenshot popup": true,
     "Hide Trending Today shelf": true,
     "Hide ads": true,
