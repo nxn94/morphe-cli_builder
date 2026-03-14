@@ -944,6 +944,25 @@ jobs:
             exit 1
           fi
 
+          # Validate downloaded APK has correct version before selecting
+          echo "::notice::Validating APK version matches target v$TARGET_VERSION..."
+          APK_FILES_FOUND=""
+          for apk_file in "$APKS_DIR"/*.{apk,xapk,apkm,apks}; do
+            [ -f "$apk_file" ] || continue
+            APK_FILES_FOUND="yes"
+            apk_name=$(basename "$apk_file")
+            apk_version=$(echo "$apk_name" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+            echo "::debug::Found APK: $apk_name (extracted version: $apk_version)"
+            if [ -n "$apk_version" ] && [ "$apk_version" != "$TARGET_VERSION" ]; then
+              echo "::warning::Found APK with wrong version: $apk_name (expected $TARGET_VERSION, got $apk_version) - removing"
+              rm -f "$apk_file"
+            fi
+          done
+          if [ -z "$APK_FILES_FOUND" ]; then
+            echo "::error::No APK files found in $APKS_DIR after download"
+            exit 1
+          fi
+
           APK_CANDIDATE="$(find_package_candidate)"
 
           if [ -z "$APK_CANDIDATE" ]; then
