@@ -480,20 +480,21 @@ jobs:
           echo "::notice::Using Morphe channels: patches=${PATCHES_BRANCH}, cli=${CLI_BRANCH}"
           echo "::notice::Resolved Morphe versions: patches=${PATCHES_TAG}, cli=${CLI_TAG}"
 
-          # Only download if not already cached
+          # Only download patches if not already cached
           if [ ! -f "$TOOLS_DIR/patches.mpp" ]; then
             echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
             gh release download "$PATCHES_TAG" \
               --repo MorpheApp/morphe-patches \
               --pattern 'patches-*.mpp' \
               --dir "$TOOLS_DIR" >/dev/null
-            # also fetch patches-list.json to know available patches by app [3](https://github.com/MorpheApp/morphe-patches)
-            curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
-              -o "$TOOLS_DIR/patches-list.json"
           else
             echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
             echo "::notice::Using cached patches.mpp"
           fi
+
+          # Always fetch patches-list.json (small file, always needed)
+          curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
+            -o "$TOOLS_DIR/patches-list.json"
 
           if [ ! -f "$TOOLS_DIR/morphe-cli.jar" ]; then
             echo "cli_tag=$CLI_TAG" >> "$GITHUB_OUTPUT"
