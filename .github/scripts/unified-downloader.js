@@ -1604,7 +1604,9 @@ async function download(packageId, version, outputDir) {
   // Try APKMirror Playwright - last resort
   console.error(`[apkmirror] Starting APKMirror Playwright fallback...`);
   try {
-    return await downloadWithApkmirror(packageId, version, outputDir);
+    const result = await downloadWithApkmirror(packageId, version, outputDir);
+    saveCachedUrl(packageId, version, result.url, 'apkmirror');
+    return result;
   } catch (e) {
     console.error(`[apkmirror] Failed: ${e.message}`);
     throw e;
