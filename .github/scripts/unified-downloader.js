@@ -184,7 +184,7 @@ function validateApkVersion(apkPath, expectedVersion) {
         output = execSync(`aapt2 dump badging "${apkPath}" 2>/dev/null`, { encoding: "utf8" });
       } catch (e2) {
         console.error(`[validate] No aapt available: ${e2.message}`);
-        return { valid: true, actualVersion: "unknown" }; // Can't validate, assume OK
+        return { valid: false, actualVersion: "unknown", error: "aapt not available - cannot validate version" };
       }
     }
 
@@ -194,20 +194,20 @@ function validateApkVersion(apkPath, expectedVersion) {
 
     if (!actualVersion) {
       console.error(`[validate] Could not extract version from APK`);
-      return { valid: true, actualVersion: "unknown" };
+      return { valid: false, actualVersion: "unknown", error: "could not extract version from APK" };
     }
 
     console.error(`[validate] APK version: ${actualVersion}, expected: ${expectedVersion}`);
 
     if (actualVersion !== expectedVersion) {
       console.error(`[validate] VERSION MISMATCH! Got ${actualVersion} but wanted ${expectedVersion}`);
-      return { valid: false, actualVersion };
+      return { valid: false, actualVersion, error: `version mismatch: got ${actualVersion}, wanted ${expectedVersion}` };
     }
 
     return { valid: true, actualVersion };
   } catch (e) {
     console.error(`[validate] Error validating APK: ${e.message}`);
-    return { valid: true, actualVersion: "unknown" }; // Assume OK if validation fails
+    return { valid: false, actualVersion: "unknown", error: e.message };
   }
 }
 
@@ -262,68 +262,17 @@ async function downloadWithApkeep(packageId, version, outputDir) {
     }
   }
 
-  // Try SPECIFIC version first (what Morphe patches need)
-  let specificVersionFailed = false;
-  let downloadedApkPath = null;
-  try {
-    console.error(`[apkeep] Trying specific version ${version}...`);
-    await runCommand("apkeep", ["-a", `${packageId}@${versionArg}`, "-d", "apk-pure", outputDir], {
-      timeout: 180000
-    });
-    const apkPath = findApkFile(outputDir);
-    if (apkPath) {
-      downloadedVersion = version;
-      downloadedApkPath = apkPath;
-      console.error(`[apkeep] Downloaded specific version: ${downloadedVersion}`);
-
-      // ALWAYS validate the downloaded APK matches requested version
-      const validation = validateApkVersion(apkPath, version);
-      if (!validation.valid) {
-        throw new Error(`VERSION MISMATCH: Downloaded APK v${validation.actualVersion} but wanted v${version}. The requested version is not available from APKPure.`);
-      }
-    } else {
-      specificVersionFailed = true;
-    }
-  } catch (e) {
-    console.error(`[apkeep] Specific version ${version} not available or validation failed: ${e.message}`);
-    specificVersionFailed = true;
-  }
-
-  // If specific version failed, try latest version as fallback
-  if (specificVersionFailed || !findApkFile(outputDir)) {
-    console.error(`[apkeep] Trying latest version as fallback...`);
-    try {
-      // Clear any partial downloads
-      const files = fs.readdirSync(outputDir);
-      for (const file of files) {
-        if (file !== '.playwright-temp') {
-          try {
-            fs.unlinkSync(path.join(outputDir, file));
-          } catch (e) { /* ignore */ }
-        }
-      }
-
-      // Try without specifying version (gets latest)
-      await runCommand("apkeep", ["-a", packageId, "-d", "apk-pure", outputDir], {
-        timeout: 300000
-      });
-      const apkPath = findApkFile(outputDir);
-      if (apkPath) {
-        downloadedVersion = "latest";
-        console.error(`[apkeep] Downloaded latest version: ${downloadedVersion}`);
-      } else {
-        throw new Error("No APK found even with latest version");
-      }
-    } catch (e) {
-      console.error(`[apkeep] Latest version also failed: ${e.message}`);
-      throw new Error(`Specific version ${version} not available on APKPure, and latest also failed`);
-    }
-  }
+  // Try SPECIFIC version only (what Morphe patches need)
+  // NO FALLBACK to latest - if the specific version isn't available, FAIL
+  console.error(`[apkeep] Requesting specific version ${version}...`);
+  await runCommand("apkeep", ["-a", `${packageId}@${versionArg}`, "-d", "apk-pure", outputDir], {
+    timeout: 180000
+  });
 
   // Find the downloaded file
   const apkPath = findApkFile(outputDir);
   if (!apkPath) {
-    throw new Error("apkeep completed but no APK found in output directory");
+    throw new Error(`apkeep failed to download ${packageId}@${version} - specific version not available`);
   }
 
   const stats = fs.statSync(apkPath);
@@ -333,14 +282,15 @@ async function downloadWithApkeep(packageId, version, outputDir) {
 
   console.error(`[apkeep] Downloaded: ${apkPath} (${stats.size} bytes)`);
 
-  // If we downloaded "latest" as fallback, validate it matches requested version
-  // (specific version was already validated above)
-  if (downloadedVersion === "latest") {
-    const validation = validateApkVersion(apkPath, version);
-    if (!validation.valid) {
-      throw new Error(`VERSION MISMATCH: Downloaded APK v${validation.actualVersion} but wanted v${version}. The requested version is not available from APKPure.`);
-    }
+  // ALWAYS validate the downloaded APK matches requested version
+  // This will FAIL if aapt is not available or if version doesn't match
+  const validation = validateApkVersion(apkPath, version);
+  if (!validation.valid) {
+    throw new Error(`VERSION MISMATCH: Downloaded APK v${validation.actualVersion} but wanted v${version}. ${validation.error || "The requested version is not available from APKPure."}`);
   }
+
+  downloadedVersion = version;
+  console.error(`[apkeep] Version validated: ${downloadedVersion}`);
 
   return {
     success: true,

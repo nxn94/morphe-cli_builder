@@ -246,6 +246,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Install aapt for version validation in unified-downloader
+          if ! command -v aapt &> /dev/null; then
+            echo "::notice::Installing aapt for version validation..."
+            mkdir -p /tmp/android-sdk
+            curl -sSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
+            mkdir -p /tmp/android-sdk/cmdline-tools/latest
+            mv /tmp/android-sdk/cmdline-tools/* /tmp/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
+            export ANDROID_HOME=/tmp/android-sdk
+            export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin"
+          fi
+
           RESULTS_FILE="$RUNNER_TEMP/download_results.json"
           echo "[]" > "$RESULTS_FILE"
 
@@ -897,6 +909,18 @@ jobs:
           fi
 
           DOWNLOAD_SUCCESS=false
+
+          # Install aapt BEFORE downloading - needed for version validation in unified-downloader
+          if ! command -v aapt &> /dev/null; then
+            echo "::notice::Installing aapt for version validation..."
+            mkdir -p /tmp/android-sdk
+            curl -sSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
+            mkdir -p /tmp/android-sdk/cmdline-tools/latest
+            mv /tmp/android-sdk/cmdline-tools/* /tmp/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
+            export ANDROID_HOME=/tmp/android-sdk
+            export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin"
+          fi
 
           # First, check if we have a pre-downloaded APK from check-versions job that matches target version
           PRELOADED_APK=""
