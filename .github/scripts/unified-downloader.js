@@ -1516,130 +1516,99 @@ async function downloadWithPlaywright(url, outputDir, packageId, version) {
 /**
  * Main download function with fallback chain
  */
+/**
+ * Main download function with improved reliability:
+ * 1. Check URL cache -> if valid, use directly
+ * 2. Check patches.json -> if has URL, verify and use
+ * 3. Parallel resolution -> first valid URL wins
+ * 4. Download from URL
+ * 5. Save to cache on success
+ * 6. Fallback to sequential on all parallel fail
+ */
 async function download(packageId, version, outputDir) {
-  // Step 0: Check cache FIRST (fastest)
-  const cachedPath = checkCache(packageId, version);
-  if (cachedPath && fs.existsSync(cachedPath)) {
-    // Copy from cache to output dir
-    const filename = path.basename(cachedPath);
-    const outputPath = path.join(outputDir, filename);
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-    fs.copyFileSync(cachedPath, outputPath);
-    console.error(`[cache] Copied from cache: ${outputPath}`);
-
-    console.log(JSON.stringify({
-      success: true,
-      filepath: outputPath,
-      version: version,
-      source: "cache",
-      url: cachedPath
-    }, null, 2));
-    return;
+  // Ensure output directory exists
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  // Step 1: Try apkeep (APKPure) FIRST - this actually works!
-  try {
-    console.error(`[apkeep] Attempting download for ${packageId} v${version}`);
-    const result = await downloadWithApkeep(packageId, version, outputDir);
-    if (result.success) {
-      // Save to cache for future use
-      saveToCache(packageId, version, result.filepath);
-      console.log(JSON.stringify(result, null, 2));
-      return;
+  // Step 1: Check URL cache
+  const cachedUrl = getCachedUrl(packageId, version);
+  if (cachedUrl) {
+    console.error(`[download] Trying cache for ${packageId} v${version}`);
+    try {
+      const isValid = await verifyUrl(cachedUrl.url);
+      if (isValid) {
+        const result = await downloadWithUrl(cachedUrl.url, outputDir, packageId, version);
+        // Update cache with incremented download count
+        saveCachedUrl(packageId, version, cachedUrl.url, cachedUrl.source);
+        return result;
+      }
+    } catch (e) {
+      console.error(`[download] Cache URL invalid: ${e.message}`);
     }
+  }
+
+  // Step 2: Check patches.json for existing URL
+  const existingUrl = loadExistingUrl(packageId, version);
+  if (existingUrl) {
+    console.error(`[download] Trying patches.json URL for ${packageId} v${version}`);
+    try {
+      const isValid = await verifyUrl(existingUrl);
+      if (isValid) {
+        const result = await downloadWithUrl(existingUrl, outputDir, packageId, version);
+        // Save to our URL cache
+        saveCachedUrl(packageId, version, existingUrl, 'patches.json');
+        return result;
+      }
+    } catch (e) {
+      console.error(`[download] patches.json URL invalid: ${e.message}`);
+    }
+  }
+
+  // Step 3: Try parallel resolution
+  console.error(`[download] Starting parallel resolution for ${packageId} v${version}`);
+  try {
+    const resolved = await parallelResolveSources(packageId, version);
+    const result = await downloadWithUrl(resolved.url, outputDir, packageId, version);
+    // Save to URL cache
+    saveCachedUrl(packageId, version, resolved.url, resolved.source);
+    return result;
+  } catch (e) {
+    console.error(`[download] Parallel resolution failed: ${e.message}`);
+  }
+
+  // Step 4: Fallback to sequential (existing behavior)
+  console.error(`[download] Falling back to sequential resolution`);
+
+  // Try apkeep
+  console.error(`[apkeep] Attempting download for ${packageId} v${version}`);
+  try {
+    const result = await downloadWithApkeep(packageId, version, outputDir);
+    const url = result.url || `apkeep:${packageId}@${version}`;
+    saveCachedUrl(packageId, version, url, 'apkeep');
+    return result;
   } catch (e) {
     console.error(`[apkeep] Failed: ${e.message}`);
   }
 
-  // Step 2: Check patches.json for existing URL (fallback)
-  const existingUrl = loadExistingUrl(packageId, version);
-
-  // Check if existing URL is a local file that already exists
-  if (existingUrl) {
-    console.error(`Found existing URL in patches.json: ${existingUrl}`);
-
-    // Check if it's a local file path that exists
-    if (!existingUrl.startsWith("http")) {
-      // Treat as local file path
-      const localPath = existingUrl;
-      if (fs.existsSync(localPath)) {
-        console.error(`Using existing local file: ${localPath}`);
-        console.log(JSON.stringify({
-          success: true,
-          filepath: localPath,
-          version: version,
-          source: "existing",
-          url: existingUrl
-        }, null, 2));
-        process.exit(0);
-      }
-    }
-
-    // For remote URLs, try to download directly using the existing URL
-    if (existingUrl && existingUrl.startsWith("http")) {
-      console.error(`Using existing URL from patches.json: ${existingUrl}`);
-
-      // Try to download directly from the existing URL
-      try {
-        const directResult = await downloadFromUrl(existingUrl, packageId, version, outputDir);
-        if (directResult.success) {
-          console.error(`[direct] Downloaded using existing URL`);
-          console.log(JSON.stringify({
-            success: true,
-            filepath: directResult.filepath,
-            version: version,
-            source: "existing-url",
-            url: existingUrl
-          }, null, 2));
-          process.exit(0);
-        }
-      } catch (e) {
-        console.error(`[direct] Failed: ${e.message}, falling back to download chain...`);
-      }
-    } else {
-      console.error(`Existing URL is remote, attempting download as fallback...`);
-    }
-  }
-
-  // Helper function to download from a direct URL using Playwright
-  async function downloadFromUrl(url, packageId, version, outputDir) {
-    // If URL is APKMirror, use Playwright (required for their JavaScript-based downloads)
-    if (url.includes("apkmirror.com")) {
-      try {
-        return await downloadWithPlaywright(url, outputDir, packageId, version);
-      } catch (e) {
-        console.error(`[direct] Playwright failed: ${e.message}`);
-        throw e;
-      }
-    }
-    // For other URLs, could add curl/wget support here
-    throw new Error("Direct download not supported for this URL type");
-  }
-
-  // Step 3: Try APKMirror API
-  console.error(`[apkmirror-api] Trying APKMirror API...`);
+  // Try APKMirror API
+  console.error(`[apkmirror-api] Attempting download for ${packageId} v${version} via API`);
   try {
-    return await downloadWithApkmirrorApi(packageId, version, outputDir);
+    const result = await downloadWithApkmirrorApi(packageId, version, outputDir);
+    saveCachedUrl(packageId, version, result.url, 'apkmirror-api');
+    return result;
   } catch (e) {
     console.error(`[apkmirror-api] Failed: ${e.message}`);
   }
 
-  // Step 4: Skip aurora-store (no working CLI available)
-  console.error(`[aurora] Skipping: aurora-store CLI not available`);
-
-  // Step 5: Try APKMirror with Playwright - last resort
+  // Try APKMirror Playwright - last resort
   console.error(`[apkmirror] Starting APKMirror Playwright fallback...`);
   try {
     return await downloadWithApkmirror(packageId, version, outputDir);
   } catch (e) {
     console.error(`[apkmirror] Failed: ${e.message}`);
-    throw e; // Re-throw to see the full error
+    throw e;
   }
-
-  // All methods failed
-  throw new Error("All download methods failed");
 }
 
 /**
