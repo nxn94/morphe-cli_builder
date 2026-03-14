@@ -898,20 +898,29 @@ jobs:
 
           DOWNLOAD_SUCCESS=false
 
-          # First, check if we have a pre-downloaded APK from check-versions job
+          # First, check if we have a pre-downloaded APK from check-versions job that matches target version
           PRELOADED_APK=""
           for ext in apk xapk apkm apks; do
-            PRELOADED_APK=$(find "$TOOLS_DIR" -type f -name "*.$ext" -printf '%p\n' 2>/dev/null | head -n1 || true)
-            [ -n "$PRELOADED_APK" ] && break
+            # Find APKs and check if version in filename matches target version
+            while IFS= read -r apk; do
+              [ -z "$apk" ] && continue
+              # Extract version from filename (e.g., youtube-20.44.38.apk -> 20.44.38)
+              apk_name=$(basename "$apk")
+              apk_version=$(echo "$apk_name" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+              if [ "$apk_version" = "$TARGET_VERSION" ]; then
+                PRELOADED_APK="$apk"
+                break 2
+              fi
+            done < <(find "$TOOLS_DIR" -type f -name "*.$ext" -printf '%p\n' 2>/dev/null || true)
           done
 
           if [ -n "$PRELOADED_APK" ] && [ -f "$PRELOADED_APK" ]; then
-            echo "::notice::Using pre-downloaded APK from check-versions: $PRELOADED_APK"
+            echo "::notice::Using pre-downloaded APK from check-versions: $PRELOADED_APK (matches v$TARGET_VERSION)"
             cp "$PRELOADED_APK" "$APKS_DIR/"
             DOWNLOAD_SUCCESS=true
           else
             # Try unified-downloader.js to download the specific version
-            echo "::notice::No pre-downloaded APK found, using unified-downloader for $APP_ID version $TARGET_VERSION..."
+            echo "::notice::No matching APK found for v$TARGET_VERSION, using unified-downloader..."
             if RESULT=$(node .github/scripts/unified-downloader.js "$APP_ID" "$TARGET_VERSION" "$APKS_DIR" 2>&1); then
               echo "::notice::unified-downloader succeeded: $RESULT"
               DOWNLOAD_SUCCESS=true
