@@ -15,7 +15,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const { chromium } = require("playwright");
 const os = require("node:os");
 
@@ -242,6 +242,68 @@ async function resolveApkmirror(packageId, version) {
   console.error(`[apkmirror-resolve] Got URL: ${url}`);
 
   return { url, source: 'apkmirror' };
+}
+
+/**
+ * Download APK from a pre-resolved URL
+ * @param {string} url - Direct URL to APK
+ * @param {string} outputDir - Output directory
+ * @param {string} packageId - Package ID
+ * @param {string} version - Expected version
+ * @returns {Promise<object>} Download result
+ */
+async function downloadWithUrl(url, outputDir, packageId, version) {
+  console.error(`[download-url] Downloading from: ${url}`);
+
+  // Use curl for direct downloads
+  const filename = `${packageId}_${version}.apk`;
+  const outputPath = path.join(outputDir, filename);
+
+  return new Promise((resolve, reject) => {
+    const curl = spawn('curl', ['-L', '-o', outputPath, '-w', '%{http_code}', '--fail', url]);
+
+    let stderr = '';
+
+    curl.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    curl.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`curl failed: ${stderr}`));
+        return;
+      }
+
+      // Validate downloaded file
+      if (!fs.existsSync(outputPath)) {
+        reject(new Error('Downloaded file not found'));
+        return;
+      }
+
+      const stats = fs.statSync(outputPath);
+      if (stats.size < 10000) { // Less than 10KB is probably an error
+        reject(new Error(`Downloaded file too small: ${stats.size} bytes`));
+        return;
+      }
+
+      // Validate APK version
+      const validation = validateApkVersion(outputPath, version);
+      if (!validation.valid) {
+        reject(new Error(`VERSION MISMATCH: expected ${version}, got ${validation.version}`));
+        return;
+      }
+
+      console.error(`[download-url] Downloaded and validated: ${outputPath} (${stats.size} bytes)`);
+      resolve({
+        success: true,
+        path: outputPath,
+        filename,
+        version: validation.version,
+        source: 'direct-url',
+        url
+      });
+    });
+  });
 }
 
 /**
