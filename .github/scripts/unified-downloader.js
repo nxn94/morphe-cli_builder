@@ -148,6 +148,13 @@ async function verifyUrl(url) {
  * @returns {Promise<object>} { url, source }
  */
 async function resolveApkeep(packageId, version) {
+  if (!packageId || !packageId.includes('.')) {
+    throw new Error('Invalid packageId format');
+  }
+  if (!version) {
+    throw new Error('Version is required');
+  }
+
   console.error(`[apkeep-resolve] Resolving ${packageId} v${version}`);
 
   return new Promise((resolve, reject) => {
@@ -156,7 +163,7 @@ async function resolveApkeep(packageId, version) {
     execFile('apkeep', args, { timeout: 60000 }, (error, stdout, stderr) => {
       if (error) {
         console.error(`[apkeep-resolve] Failed: ${error.message}`);
-        reject(new Error(`apkeep failed: ${error.message}`));
+        reject(new Error(`apkeep failed: ${error.message}${stderr ? ` - ${stderr}` : ''}`));
         return;
       }
 
