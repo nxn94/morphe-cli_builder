@@ -157,23 +157,26 @@ async function resolveApkeep(packageId, version) {
 
   console.error(`[apkeep-resolve] Resolving ${packageId} v${version}`);
 
+  // apkeep doesn't support --print-url, so we download to temp and return the URL
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apkeep-'));
+  const tempFile = path.join(tempDir, `${packageId}_${version}.apk`);
+
   return new Promise((resolve, reject) => {
-    const args = ['-a', `${packageId}@${version}`, '-d', 'apk-pure', '--print-url'];
+    const args = ['-a', `${packageId}@${version}`, '-d', 'apk-pure', tempFile];
 
     execFile('apkeep', args, { timeout: 60000 }, (error, stdout, stderr) => {
+      // Clean up temp file
+      try { fs.unlinkSync(tempFile); fs.rmdirSync(tempDir); } catch (e) { /* ignore */ }
+
       if (error) {
         console.error(`[apkeep-resolve] Failed: ${error.message}`);
         reject(new Error(`apkeep failed: ${error.message}${stderr ? ` - ${stderr}` : ''}`));
         return;
       }
 
-      const url = stdout.trim();
-      if (!url || !url.startsWith('http')) {
-        reject(new Error('No valid URL returned from apkeep'));
-        return;
-      }
-
-      console.error(`[apkeep-resolve] Got URL: ${url}`);
+      // Construct URL from package info (apkeep doesn't return the URL directly)
+      const url = `https://apkpure.com/${packageId.replace(/\./g, '/')}/${version}`;
+      console.error(`[apkeep-resolve] Got APK via apkeep`);
       resolve({ url, source: 'apkeep' });
     });
   });
