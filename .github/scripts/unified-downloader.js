@@ -60,6 +60,76 @@ function getCachedUrl(packageId, version) {
 }
 
 /**
+ * Save URL to cache
+ * @param {string} packageId - Package ID
+ * @param {string} version - Version
+ * @param {string} url - Resolved URL
+ * @param {string} source - Source that provided the URL
+ * @returns {string} Path to cached file
+ */
+function saveCachedUrl(packageId, version, url, source) {
+  const cacheDir = path.join(URL_CACHE_DIR, packageId);
+
+  // Create directory if it doesn't exist
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+
+  const cacheFile = path.join(cacheDir, `${version}.json`);
+
+  // Read existing cache or create new
+  let cacheData = { downloads: 0, lastWorkingAt: null };
+  if (fs.existsSync(cacheFile)) {
+    try {
+      cacheData = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    } catch (e) {
+      // Ignore parse errors, use defaults
+    }
+  }
+
+  // Update cache entry
+  const newCacheData = {
+    version,
+    url,
+    source,
+    resolvedAt: new Date().toISOString(),
+    downloads: cacheData.downloads + 1,
+    lastWorkingAt: new Date().toISOString()
+  };
+
+  fs.writeFileSync(cacheFile, JSON.stringify(newCacheData, null, 2));
+  console.error(`[url-cache] Saved: ${packageId} v${version} from ${source}`);
+
+  return cacheFile;
+}
+
+/**
+ * Verify URL still works with HEAD request
+ * @param {string} url - URL to verify
+ * @returns {Promise<boolean>} True if URL is valid
+ */
+async function verifyUrl(url) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+
+    const response = await fetch(url, {
+      method: 'HEAD',
+      signal: controller.signal,
+      redirect: 'follow'
+    });
+
+    clearTimeout(timeout);
+    const isValid = response.ok && (response.status >= 200 && response.status < 300);
+    console.error(`[url-cache] URL verify: ${isValid ? 'valid' : 'invalid'} (${response.status})`);
+    return isValid;
+  } catch (e) {
+    console.error(`[url-cache] URL verify failed: ${e.message}`);
+    return false;
+  }
+}
+
+/**
  * Parse command-line arguments
  */
 function parseArgs() {
