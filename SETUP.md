@@ -94,16 +94,14 @@ Example `patches.json` structure:
 }
 ```
 
-URL resolution order (at build time):
-1. Automatic: Query morphe-cli for latest supported version, then resolve APKMirror URL via curl
-2. Manual fallback: `__morphe.download_urls.<appId>.<target_version>`
-3. Manual fallback: `__morphe.download_urls.<appId>.latest_supported`
+Download order (at build time):
+1. **Cache** - Check `~/.cache/auto-morphe-builder/apks/` for existing downloads (instant)
+2. **apkeep (APKPure)** - Primary source, downloads `.xapk` files reliably
+3. **patches.json URLs** - Manual URLs from `__morphe.download_urls.<appId>`
+4. **APKMirror API** - Falls back if above fail
+5. **APKMirror Playwright** - Last resort (often blocked by Cloudflare)
 
-The automatic resolver:
-- Queries morphe-cli for the latest supported version
-- Constructs the APKMirror version page URL
-- Probes variant numbers (1-15) using curl until a working URL is found
-- This approach bypasses Cloudflare protection that Playwright struggles with
+The automatic resolver uses apkeep which reliably downloads from APKPure. APKPure provides `.xapk` files (split APKs) which are merged to standalone `.apk` using APKEditor before patching.
 
 ## 5. Run The Workflow
 

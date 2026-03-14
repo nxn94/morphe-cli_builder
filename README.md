@@ -104,18 +104,17 @@ Disabled patches are passed to Morphe via `-d "<patch name>"`.
 
 ## Download Flow
 
-The workflow automatically resolves APK download URLs at build time:
+The workflow downloads APKs using a multi-source fallback chain:
 
-1. Uses `morphe-cli list-versions` to find the latest Morphe-supported version for each app
-2. Constructs the APKMirror URL directly using the predictable URL format
-3. Uses curl to probe for the correct variant number (APKMirror variants are numbered -1, -2, etc.)
-4. Falls back to manual URLs in `patches.json` if automatic resolution fails
+1. **Cache** - Checks local cache (`~/.cache/auto-morphe-builder/apks/`) first for instant delivery
+2. **apkeep (APKPure)** - Primary download source, works reliably
+3. **patches.json URLs** - Uses manual URLs as fallback
+4. **APKMirror API** - Tries if above sources fail
+5. **APKMirror Playwright** - Last resort (often blocked by Cloudflare)
+
+APKPure provides `.xapk` files (split APK format). The workflow uses APKEditor to merge these into standalone `.apk` files before patching.
 
 The resolved URLs are stored in `patches.json` as they're used.
-
-APKMirror URL format:
-- Version page: `https://www.apkmirror.com/apk/{developer}/{app}/{app}-{version}-release/`
-- Download: `https://www.apkmirror.com/apk/{developer}/{app}/{app}-{version}-{variant}-android-apk-download/`
 
 ## APK Selection Logic
 
