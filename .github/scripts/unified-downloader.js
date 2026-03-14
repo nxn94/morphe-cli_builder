@@ -68,6 +68,11 @@ function getCachedUrl(packageId, version) {
  * @returns {string} Path to cached file
  */
 function saveCachedUrl(packageId, version, url, source) {
+  // Input validation
+  if (!packageId || !version || !url) {
+    throw new Error('Missing required parameters');
+  }
+
   const cacheDir = path.join(URL_CACHE_DIR, packageId);
 
   // Create directory if it doesn't exist
@@ -75,7 +80,9 @@ function saveCachedUrl(packageId, version, url, source) {
     fs.mkdirSync(cacheDir, { recursive: true });
   }
 
-  const cacheFile = path.join(cacheDir, `${version}.json`);
+  // Sanitize version for use in filename to prevent path traversal
+  const safeVersion = version.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const cacheFile = path.join(cacheDir, `${safeVersion}.json`);
 
   // Read existing cache or create new
   let cacheData = { downloads: 0, lastWorkingAt: null };
@@ -83,7 +90,7 @@ function saveCachedUrl(packageId, version, url, source) {
     try {
       cacheData = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
     } catch (e) {
-      // Ignore parse errors, use defaults
+      console.error(`[url-cache] Corrupted cache file, recreating: ${e.message}`);
     }
   }
 
@@ -109,6 +116,11 @@ function saveCachedUrl(packageId, version, url, source) {
  * @returns {Promise<boolean>} True if URL is valid
  */
 async function verifyUrl(url) {
+  // Input validation
+  if (!url) {
+    throw new Error('URL is required');
+  }
+
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
@@ -120,7 +132,7 @@ async function verifyUrl(url) {
     });
 
     clearTimeout(timeout);
-    const isValid = response.ok && (response.status >= 200 && response.status < 300);
+    const isValid = response.ok;
     console.error(`[url-cache] URL verify: ${isValid ? 'valid' : 'invalid'} (${response.status})`);
     return isValid;
   } catch (e) {
