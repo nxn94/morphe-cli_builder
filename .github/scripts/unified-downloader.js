@@ -142,6 +142,37 @@ async function verifyUrl(url) {
 }
 
 /**
+ * Resolve URL using apkeep (APKPure) - returns URL only, no download
+ * @param {string} packageId - Package ID
+ * @param {string} version - Version to resolve
+ * @returns {Promise<object>} { url, source }
+ */
+async function resolveApkeep(packageId, version) {
+  console.error(`[apkeep-resolve] Resolving ${packageId} v${version}`);
+
+  return new Promise((resolve, reject) => {
+    const args = ['-a', `${packageId}@${version}`, '-d', 'apk-pure', '--print-url'];
+
+    execFile('apkeep', args, { timeout: 60000 }, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`[apkeep-resolve] Failed: ${error.message}`);
+        reject(new Error(`apkeep failed: ${error.message}`));
+        return;
+      }
+
+      const url = stdout.trim();
+      if (!url || !url.startsWith('http')) {
+        reject(new Error('No valid URL returned from apkeep'));
+        return;
+      }
+
+      console.error(`[apkeep-resolve] Got URL: ${url}`);
+      resolve({ url, source: 'apkeep' });
+    });
+  });
+}
+
+/**
  * Parse command-line arguments
  */
 function parseArgs() {
