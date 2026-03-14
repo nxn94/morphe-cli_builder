@@ -944,22 +944,59 @@ jobs:
             exit 1
           fi
 
-          # Validate downloaded APK has correct version before selecting
-          echo "::notice::Validating APK version matches target v$TARGET_VERSION..."
-          APK_FILES_FOUND=""
-          for apk_file in "$APKS_DIR"/*.{apk,xapk,apkm,apks}; do
+          # Validate downloaded APK has correct version using aapt
+          echo "::notice::Validating APK version matches target v$TARGET_VERSION using aapt..."
+
+          # Ensure aapt is available (comes with android-sdk or can be installed)
+          if ! command -v aapt &> /dev/null; then
+            echo "::notice::Installing aapt..."
+            mkdir -p /tmp/android-sdk
+            curl -sSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
+            mkdir -p /tmp/android-sdk/cmdline-tools/latest
+            mv /tmp/android-sdk/cmdline-tools/* /tmp/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
+            export ANDROID_HOME=/tmp/android-sdk
+            export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin"
+          fi
+
+          # Find and validate all APK files
+          APK_VALID=false
+          for apk_file in "$APKS_DIR"/*.apk; do
             [ -f "$apk_file" ] || continue
-            APK_FILES_FOUND="yes"
-            apk_name=$(basename "$apk_file")
-            apk_version=$(echo "$apk_name" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
-            echo "::debug::Found APK: $apk_name (extracted version: $apk_version)"
-            if [ -n "$apk_version" ] && [ "$apk_version" != "$TARGET_VERSION" ]; then
-              echo "::warning::Found APK with wrong version: $apk_name (expected $TARGET_VERSION, got $apk_version) - removing"
+
+            # Get actual version from APK using aapt
+            apk_info=$(aapt dump badging "$apk_file" 2>/dev/null || echo "")
+            apk_version=$(echo "$apk_info" | grep -oP "versionName='\K[^']+" | head -n1 || true)
+            apk_version_code=$(echo "$apk_info" | grep -oP "versionCode='\K[^']+" | head -n1 || true)
+
+            echo "::debug::APK: $(basename "$apk_file") -> versionName=$apk_version, versionCode=$apk_version_code"
+
+            # Compare versionName with target version
+            if [ "$apk_version" = "$TARGET_VERSION" ]; then
+              echo "::notice::APK version validated: $(basename "$apk_file") is v$apk_version (matches target)"
+              APK_VALID=true
+              break
+            else
+              echo "::warning::APK has wrong version: $(basename "$apk_file") is v$apk_version but wanted v$TARGET_VERSION - removing"
               rm -f "$apk_file"
             fi
           done
-          if [ -z "$APK_FILES_FOUND" ]; then
-            echo "::error::No APK files found in $APKS_DIR after download"
+
+          # Also check xapk/apkm/apks files
+          if [ "$APK_VALID" = false ]; then
+            for apk_file in "$APKS_DIR"/*.{xapk,apkm,apks}; do
+              [ -f "$apk_file" ] || continue
+              echo "::notice::Checking split package: $(basename "$apk_file")"
+              # For split packages, we'll validate after merge
+              APK_VALID=true
+              break
+            done
+          fi
+
+          if [ "$APK_VALID" = false ]; then
+            echo "::error::No APK found with correct version v$TARGET_VERSION"
+            echo "::notice::Files in $APKS_DIR:"
+            ls -la "$APKS_DIR" || true
             exit 1
           fi
 
