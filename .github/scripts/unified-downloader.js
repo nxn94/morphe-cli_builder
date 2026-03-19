@@ -1014,6 +1014,79 @@ async function downloadWithApkmirrorApi(packageId, version, outputDir) {
 /**
  * Download using APKMirror with Playwright
  */
+/**
+ * Download APK via Playwright by navigating the full 3-page APKMirror flow
+ * within one browser session — avoids session-cookie dependency for download.php.
+ */
+async function downloadViaPlaywright(apkmirrorPath, version, outputDir) {
+  const config = loadConfig();
+  const preferredArch = config.preferred_arch || 'arm64-v8a';
+  const priorities = buildVariantPriorities(preferredArch);
+
+  console.error(`[apkmirror-pw] Starting browser download for ${apkmirrorPath} v${version}`);
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+  });
+
+  try {
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0',
+      locale: 'en-US',
+      acceptDownloads: true,
+      extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9', 'DNT': '1' },
+    });
+    const page = await context.newPage();
+
+    // Page 1: Release page → select variant using priority list
+    const page1Url = buildReleasePageUrl(apkmirrorPath, version);
+    console.error(`[apkmirror-pw] Page 1: ${page1Url}`);
+    await page.goto(page1Url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const $1 = cheerio.load(await page.content());
+    const variantHref = selectVariant($1, priorities);
+
+    // Page 2: Variant page → find download button
+    const page2Url = `https://www.apkmirror.com${variantHref}`;
+    console.error(`[apkmirror-pw] Page 2: ${page2Url}`);
+    await page.goto(page2Url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const $2 = cheerio.load(await page.content());
+    const dlButtonHref = $2('a.downloadButton[href]').attr('href');
+    if (!dlButtonHref) throw new Error('Download button not found on APKMirror variant page');
+
+    // Page 3: Download confirmation page → click final link within browser session
+    const page3Url = `https://www.apkmirror.com${dlButtonHref}`;
+    console.error(`[apkmirror-pw] Page 3: ${page3Url}`);
+    await page.goto(page3Url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // Capture the resolved URL before clicking
+    const $3 = cheerio.load(await page.content());
+    const finalHref = $3('a[data-google-interstitial="false"][href]').attr('href');
+    if (!finalHref) throw new Error('Final download link not found on APKMirror download page');
+    const finalUrl = finalHref.startsWith('http') ? finalHref : `https://www.apkmirror.com${finalHref}`;
+    console.error(`[apkmirror-pw] Resolved URL: ${finalUrl}`);
+
+    // Click the link inside the browser session so cookies are preserved for the download
+    const downloadPromise = page.waitForEvent('download', { timeout: 120000 });
+    await page.click('a[data-google-interstitial="false"]');
+    const dl = await downloadPromise;
+
+    const suggestedFilename = dl.suggestedFilename() || `${apkmirrorPath.split('/').pop()}_${version}.apk`;
+    const destPath = path.join(outputDir, suggestedFilename);
+    console.error(`[apkmirror-pw] Saving download to: ${destPath}`);
+    await dl.saveAs(destPath);
+
+    if (!fs.existsSync(destPath)) throw new Error(`File not found after download: ${destPath}`);
+    const stats = fs.statSync(destPath);
+    if (stats.size < 10000) throw new Error(`Downloaded file too small: ${stats.size} bytes`);
+
+    console.error(`[apkmirror-pw] Download complete: ${destPath} (${stats.size} bytes)`);
+    return { success: true, path: destPath, filename: suggestedFilename, url: finalUrl };
+  } finally {
+    await browser.close();
+  }
+}
+
 async function downloadWithApkmirror(packageId, version, outputDir) {
   console.error(`[apkmirror] Attempting download for ${packageId} v${version}`);
 
@@ -1027,12 +1100,9 @@ async function downloadWithApkmirror(packageId, version, outputDir) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  // First resolve the download URL
-  const downloadUrl = await resolveApkmirrorUrl(apkmirrorPath, version);
-  console.error(`[apkmirror] Resolved URL: ${downloadUrl}`);
-
-  // Download using Playwright
-  const result = await downloadWithPlaywright(downloadUrl, outputDir, packageId, version);
+  // Download within one browser session: resolve URL + download in same context
+  console.error(`[apkmirror] Starting APKMirror Playwright fallback...`);
+  const result = await downloadViaPlaywright(apkmirrorPath, version, outputDir);
 
   if (!result.success) {
     throw new Error("Playwright download failed");
@@ -1043,7 +1113,7 @@ async function downloadWithApkmirror(packageId, version, outputDir) {
     filepath: result.path,
     version: version,
     source: "apkmirror",
-    url: downloadUrl
+    url: result.url
   };
 }
 
