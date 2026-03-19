@@ -1,0 +1,224 @@
+name: Update patches.json from upstream repos
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-patches:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync patches.json
+        run: |
+          set -euo pipefail
+
+          # Validate required config keys
+          if ! jq -e '.patch_repos | type == "object"' config.json >/dev/null 2>&1; then
+            echo "::error::config.json is missing 'patch_repos'. Run the config migration first."
+            exit 1
+          fi
+          if ! jq -e '.cli | has("repo") and has("branch")' config.json >/dev/null 2>&1; then
+            echo "::error::config.json is missing 'cli.repo' or 'cli.branch'."
+            exit 1
+          fi
+
+          # Resolve branch → tag. Same logic as morphe-build.yml.
+          resolve_release_tag() {
+            local repo="$1"
+            local branch="$2"
+            local stable_tag selected_tag
+            stable_tag="$(gh release view --repo "$repo" --json tagName -q .tagName || true)"
+            if [ "$branch" = "main" ]; then
+              selected_tag="$stable_tag"
+            else
+              selected_tag="$(
+                gh api "repos/${repo}/releases?per_page=100" --jq '
+                  [ .[]
+                    | select(
+                        (.draft != true)
+                        and (
+                          ((.target_commitish // "" | ascii_downcase) == "dev")
+                          or (.prerelease == true)
+                          or ((.tag_name // "" | ascii_downcase | test("(^|[-_.])(dev|beta|alpha|rc)")))
+                        )
+                      )
+                  ][0].tag_name // empty
+                ' || true
+              )"
+              if [ -z "$selected_tag" ]; then
+                echo "::warning::No dev-style release found for ${repo}; falling back to latest."
+                selected_tag="$stable_tag"
+              fi
+            fi
+            if [ -z "$selected_tag" ]; then
+              echo "::error::Could not resolve release tag for ${repo} (branch=${branch})."
+              exit 1
+            fi
+            echo "$selected_tag"
+          }
+
+          # Build list of unique repo+branch pairs from config.json
+          REPO_PAIRS="$(jq -r '
+            .patch_repos
+            | to_entries
+            | map(.value | "\(.repo)|\(.branch)")
+            | unique[]
+          ' config.json)"
+
+          # Resolve tag for each unique repo+branch; store in temp files
+          mkdir -p "$RUNNER_TEMP/patch-tags"
+          while IFS='|' read -r repo branch; do
+            echo "::notice::Resolving tag for ${repo} (branch=${branch})..."
+            tag="$(resolve_release_tag "$repo" "$branch")"
+            echo "::notice::  -> ${tag}"
+            # Store tag in a file named by slug (/ replaced by -)
+            slug="${repo//\//-}"
+            echo "$tag" > "$RUNNER_TEMP/patch-tags/${slug}.tag"
+          done <<< "$REPO_PAIRS"
+
+          # Fetch patches-list.json for each unique repo at its resolved tag.
+          # Fail immediately if any fetch fails — no partial commits.
+          mkdir -p "$RUNNER_TEMP/patches-lists"
+          while IFS='|' read -r repo branch; do
+            slug="${repo//\//-}"
+            tag="$(cat "$RUNNER_TEMP/patch-tags/${slug}.tag")"
+            url="https://raw.githubusercontent.com/${repo}/${tag}/patches-list.json"
+            echo "::notice::Fetching patches-list.json from ${repo}@${tag}..."
+            curl -fsSL "$url" -o "$RUNNER_TEMP/patches-lists/${slug}.json"
+          done <<< "$REPO_PAIRS"
+
+          # Build the new repo-keyed patches.json.
+          # For each repo, for each app assigned to that repo in config.json:
+          #   - collect patches from patches-list.json that are compatible with that app
+          #   - default each to true
+          #   - preserve any existing true/false from current patches.json if it's already repo-keyed
+          #
+          # If current patches.json is NOT repo-keyed (old flat structure), discard it entirely
+          # and default everything to true. Operator must re-configure false toggles after migration.
+
+          EXISTING_IS_REPO_KEYED=false
+          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
+            # Repo-keyed: top-level keys look like "owner/repo" (contain /)
+            if jq -e 'keys | map(select(contains("/"))) | length > 0' patches.json >/dev/null 2>&1; then
+              EXISTING_IS_REPO_KEYED=true
+            fi
+          fi
+
+          if [ "$EXISTING_IS_REPO_KEYED" = "true" ]; then
+            echo "::notice::Existing patches.json is repo-keyed; preserving user toggles."
+          else
+            echo "::warning::Existing patches.json is flat or empty; resetting all toggles to true (migration run)."
+          fi
+
+          # jq compat_pkg_names helper (same as morphe-build.yml)
+          COMPAT_FN='
+            def compat_pkg_names($patch):
+              if ($patch.compatiblePackages? | type) == "object" then
+                ($patch.compatiblePackages | keys)
+              elif ($patch.compatible_packages? | type) == "object" then
+                ($patch.compatible_packages | keys)
+              elif ($patch.compatiblePackages? | type) == "array" then
+                ($patch.compatiblePackages | map(.name // .packageName // empty))
+              elif ($patch.compatible_packages? | type) == "array" then
+                ($patch.compatible_packages | map(.name // .packageName // empty))
+              else
+                []
+              end;
+          '
+
+          # Build the new patches.json
+          # Strategy: start from existing (if repo-keyed) as base, then for each repo
+          # rebuild its section from upstream patches-list.json + preserved toggles.
+          if [ "$EXISTING_IS_REPO_KEYED" = "true" ]; then
+            cp patches.json "$RUNNER_TEMP/patches_base.json"
+          else
+            echo '{}' > "$RUNNER_TEMP/patches_base.json"
+          fi
+
+          # Process each repo
+          while IFS='|' read -r repo branch; do
+            slug="${repo//\//-}"
+            PATCHES_LIST="$RUNNER_TEMP/patches-lists/${slug}.json"
+
+            # Get all apps assigned to this repo
+            APPS_FOR_REPO="$(jq -c --arg r "$repo" '
+              [.patch_repos | to_entries[]
+                | select(.value.repo == $r)
+                | .key]
+            ' config.json)"
+
+            # Build defaults: for each app, collect compatible patch names, default true
+            jq --argjson apps "$APPS_FOR_REPO" "$COMPAT_FN"'
+              . as $src
+              | reduce $apps[] as $pkg ({};
+                  .[$pkg] = (
+                    reduce (
+                      (($src.patches // $src)[])
+                      | select((compat_pkg_names(.) | index($pkg)) != null)
+                      | .name
+                    ) as $name
+                    ({};
+                      .[$name] = true
+                    )
+                  )
+                )
+            ' "$PATCHES_LIST" > "$RUNNER_TEMP/defaults_${slug}.json"
+
+            # Merge defaults with existing user toggles for this repo.
+            # Key rule: only upstream patch names survive (stale keys are dropped).
+            # For each patch name present in upstream, use the existing user toggle if set,
+            # otherwise default to true.
+            jq -n \
+              --arg repo "$repo" \
+              --slurpfile defaults "$RUNNER_TEMP/defaults_${slug}.json" \
+              --slurpfile base "$RUNNER_TEMP/patches_base.json" '
+              ($defaults[0] // {}) as $d
+              | ($base[0] // {}) as $existing
+              | ($existing[$repo] // {}) as $repo_existing
+              | reduce ($d | keys[]) as $pkg ({};
+                  .[$pkg] = (
+                    reduce ($d[$pkg] | keys[]) as $pname ({};
+                      .[$pname] = (($repo_existing[$pkg] // {})[$pname] // true)
+                    )
+                  )
+                )
+            ' > "$RUNNER_TEMP/merged_${slug}.json"
+
+            # Inject merged section back into base
+            jq --arg repo "$repo" \
+               --slurpfile merged "$RUNNER_TEMP/merged_${slug}.json" \
+               '.[$repo] = $merged[0]' \
+               "$RUNNER_TEMP/patches_base.json" > "$RUNNER_TEMP/patches_next.json"
+            mv "$RUNNER_TEMP/patches_next.json" "$RUNNER_TEMP/patches_base.json"
+          done <<< "$REPO_PAIRS"
+
+          # Drop repos not in config.json from the result
+          ACTIVE_REPOS="$(jq -c '[.patch_repos | to_entries[] | .value.repo] | unique' config.json)"
+          jq --argjson active "$ACTIVE_REPOS" 'with_entries(select(.key as $k | $active | index($k) != null))' \
+            "$RUNNER_TEMP/patches_base.json" > patches.json.tmp
+          mv patches.json.tmp patches.json
+
+          echo "::notice::patches.json updated."
+          jq 'keys' patches.json
+
+      - name: Commit if changed
+        run: |
+          set -euo pipefail
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add patches.json
+          if git diff --cached --quiet; then
+            echo "::notice::patches.json unchanged; nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore: sync patches from upstream repos"
+          BRANCH_NAME="${GITHUB_REF_NAME:-main}"
+          git push origin "HEAD:${BRANCH_NAME}"
+          echo "::notice::Committed and pushed updated patches.json."
