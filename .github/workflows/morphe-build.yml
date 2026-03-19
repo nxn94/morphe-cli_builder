@@ -584,7 +584,7 @@ jobs:
           ' "$TOOLS_DIR/patches-list.json" > "$DEFAULTS_FILE"
 
           # Load existing user config if valid JSON, otherwise start fresh.
-          if [ -s config.json ] && jq -e 'type=="object"' config.json >/dev/null 2>&1; then
+          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
             cp patches.json "$EXISTING_FILE"
           else
             if [ -f patches.json ]; then
@@ -835,11 +835,8 @@ jobs:
               *) apk_name="${apk_name}.apk" ;;
             esac
             
-            local output_file="$APKS_DIR/$apk_name"
-            local meta_file="$APKS_DIR/meta.json"
-            
-            # Use unified downloader instead
-            node .github/scripts/unified-downloader.js "$APP_ID" "$VERSION" "$APKS_DIR"
+            # Delegate to curl downloader with the pre-resolved URL
+            download_with_curl "$url"
           }
 
           download_with_curl() {
@@ -1610,7 +1607,7 @@ jobs:
             )
           ' "$PATCHES_LIST_FILE" > "$DEFAULTS_FILE"
 
-          if [ -s config.json ] && jq -e 'type=="object"' config.json >/dev/null 2>&1; then
+          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
             cp patches.json "$EXISTING_FILE"
           else
             echo '{}' > "$EXISTING_FILE"
