@@ -14,9 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-build: ${{ steps.version-check.outputs.should-build }}
-      patches-version: ${{ steps.version-check.outputs.patches-version }}
+      matrix-include: ${{ steps.version-check.outputs.matrix-include }}
+      repo-versions: ${{ steps.version-check.outputs.repo-versions }}
       cli-version: ${{ steps.version-check.outputs.cli-version }}
-      patches-branch: ${{ steps.version-check.outputs.patches-branch }}
       cli-branch: ${{ steps.version-check.outputs.cli-branch }}
     env:
       GH_TOKEN: ${{ github.token }}
@@ -29,23 +29,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Read channel selection from config.json.
-          # Supported values: main, dev.
-          PATCHES_BRANCH="main"
-          CLI_BRANCH="main"
-          if [ -s config.json ] && jq -e 'type=="object"' config.json >/dev/null 2>&1; then
-            PATCHES_BRANCH="$(jq -r '(.branches?.morphe_patches // "main") | ascii_downcase' config.json)"
-            CLI_BRANCH="$(jq -r '(.branches?.morphe_cli // "main") | ascii_downcase' config.json)"
+          # Validate required config keys.
+          if ! jq -e '.patch_repos | type == "object" and length > 0' config.json >/dev/null 2>&1; then
+            echo "::error::config.json is missing 'patch_repos' or it is empty. Add per-app repo assignments."
+            exit 1
+          fi
+          if ! jq -e '.cli | has("repo") and has("branch")' config.json >/dev/null 2>&1; then
+            echo "::error::config.json is missing 'cli.repo' or 'cli.branch'."
+            exit 1
           fi
 
-          if [ "$PATCHES_BRANCH" != "main" ] && [ "$PATCHES_BRANCH" != "dev" ]; then
-            echo "::warning::Invalid morphe_patches branch '$PATCHES_BRANCH' in config.json. Falling back to 'main'."
-            PATCHES_BRANCH="main"
-          fi
+          CLI_REPO="$(jq -r '.cli.repo' config.json)"
+          CLI_BRANCH="$(jq -r '.cli.branch | ascii_downcase' config.json)"
           if [ "$CLI_BRANCH" != "main" ] && [ "$CLI_BRANCH" != "dev" ]; then
-            echo "::warning::Invalid morphe_cli branch '$CLI_BRANCH' in config.json. Falling back to 'main'."
+            echo "::warning::Invalid cli.branch '$CLI_BRANCH'. Falling back to 'main'."
             CLI_BRANCH="main"
           fi
+
+          # Build list of unique patch repo+branch pairs
+          REPO_PAIRS="$(jq -r '
+            .patch_repos
+            | to_entries
+            | map(.value | "\(.repo)|\(.branch | ascii_downcase)")
+            | unique[]
+          ' config.json)"
 
           resolve_release_tag() {
             local repo="$1"
@@ -84,40 +91,110 @@ jobs:
             echo "$selected_tag"
           }
 
-          PATCHES_TAG="$(resolve_release_tag "MorpheApp/morphe-patches" "$PATCHES_BRANCH")"
-          CLI_TAG="$(resolve_release_tag "MorpheApp/morphe-cli" "$CLI_BRANCH")"
+          # Resolve tag for each unique patch repo+branch pair
+          declare -A REPO_TAGS
+          while IFS='|' read -r repo branch; do
+            echo "::notice::Resolving tag for ${repo} (branch=${branch})..."
+            tag="$(resolve_release_tag "$repo" "$branch")"
+            echo "::notice::  ${repo} -> ${tag}"
+            REPO_TAGS["$repo"]="$tag"
+          done <<< "$REPO_PAIRS"
 
-          echo "patches-version=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
+          # Resolve CLI tag
+          CLI_TAG="$(resolve_release_tag "$CLI_REPO" "$CLI_BRANCH")"
+          echo "::notice::CLI (${CLI_REPO}) -> ${CLI_TAG}"
+
+          # Build matrix-include JSON array
+          MATRIX_INCLUDE="$(jq -c '
+            .patch_repos
+            | to_entries
+            | map({
+                name: .value.name,
+                appId: .key,
+                patchRepo: .value.repo,
+                patchBranch: (.value.branch | ascii_downcase),
+                patchSlug: (.value.repo | gsub("/"; "-"))
+              })
+          ' config.json)"
+
+          # Inject resolved tags into matrix entries
+          MATRIX_WITH_TAGS="$(
+            echo "$MATRIX_INCLUDE" | jq -c \
+              --argjson tags "$(
+                for repo in "${!REPO_TAGS[@]}"; do
+                  echo "{\"repo\":\"$repo\",\"tag\":\"${REPO_TAGS[$repo]}\"}"
+                done | jq -sc 'map({(.repo): .tag}) | add // {}'
+              )" '
+              map(. + {patchTag: ($tags[.patchRepo] // "")})
+            '
+          )"
+
+          # Guard: if matrix is empty (no apps configured), skip build
+          if [ "$(echo "$MATRIX_WITH_TAGS" | jq 'length')" = "0" ]; then
+            echo "::warning::No apps configured in patch_repos; skipping build."
+            echo "should-build=false" >> "$GITHUB_OUTPUT"
+            echo "matrix-include=[]" >> "$GITHUB_OUTPUT"
+            echo "repo-versions={}" >> "$GITHUB_OUTPUT"
+            echo "cli-version=$CLI_TAG" >> "$GITHUB_OUTPUT"
+            echo "cli-branch=$CLI_BRANCH" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Build repo-versions map (for state comparison and update-state)
+          REPO_VERSIONS="$(
+            for repo in "${!REPO_TAGS[@]}"; do
+              echo "{\"repo\":\"$repo\",\"tag\":\"${REPO_TAGS[$repo]}\"}"
+            done | jq -sc 'map({(.repo): .tag}) | add // {}'
+          )"
+
+          echo "matrix-include=$MATRIX_WITH_TAGS" >> "$GITHUB_OUTPUT"
+          echo "repo-versions=$REPO_VERSIONS" >> "$GITHUB_OUTPUT"
           echo "cli-version=$CLI_TAG" >> "$GITHUB_OUTPUT"
-          echo "patches-branch=$PATCHES_BRANCH" >> "$GITHUB_OUTPUT"
           echo "cli-branch=$CLI_BRANCH" >> "$GITHUB_OUTPUT"
 
-          # Load previous state
+          # Load previous state — read new patches map; fall back to old flat keys for migration.
+          PREV_REPO_VERSIONS="{}"
+          PREV_CLI_VERSION="none"
+          PREV_CLI_BRANCH_STATE="main"
           if [ -s state.json ] && jq -e 'type=="object"' state.json >/dev/null 2>&1; then
-            PREV_PATCHES=$(jq -r '.patches_version // "none"' state.json)
-            PREV_CLI=$(jq -r '.cli_version // "none"' state.json)
-            PREV_PATCHES_BRANCH=$(jq -r '.patches_branch // "main"' state.json)
-            PREV_CLI_BRANCH=$(jq -r '.cli_branch // "main"' state.json)
+            PREV_CLI_VERSION="$(jq -r '.cli_version // "none"' state.json)"
+            PREV_CLI_BRANCH_STATE="$(jq -r '.cli_branch // "main"' state.json)"
+            if jq -e '.patches | type == "object"' state.json >/dev/null 2>&1; then
+              # New repo-keyed structure
+              PREV_REPO_VERSIONS="$(jq -c '.patches | map_values(.version)' state.json)"
+            else
+              # Old flat structure (pre-migration): treat as unknown versions
+              echo "::notice::state.json uses old flat structure; treating patch versions as unknown (will trigger build)."
+              PREV_REPO_VERSIONS="{}"
+            fi
           else
             if [ -f state.json ]; then
-              echo "::warning::state.json is missing or invalid JSON; using default previous state."
+              echo "::warning::state.json is missing or invalid JSON; using defaults."
             fi
-            PREV_PATCHES="none"
-            PREV_CLI="none"
-            PREV_PATCHES_BRANCH="main"
-            PREV_CLI_BRANCH="main"
+          fi
+
+          # Check if any repo version changed
+          VERSION_CHANGED=false
+          for repo in "${!REPO_TAGS[@]}"; do
+            CURRENT_TAG="${REPO_TAGS[$repo]}"
+            PREV_TAG="$(echo "$PREV_REPO_VERSIONS" | jq -r --arg r "$repo" '.[$r] // "none"')"
+            if [ "$CURRENT_TAG" != "$PREV_TAG" ]; then
+              echo "::notice::Patch version changed: ${repo}: ${PREV_TAG} -> ${CURRENT_TAG}"
+              VERSION_CHANGED=true
+            fi
+          done
+
+          if [ "$CLI_TAG" != "$PREV_CLI_VERSION" ] || [ "$CLI_BRANCH" != "$PREV_CLI_BRANCH_STATE" ]; then
+            echo "::notice::CLI version changed: ${PREV_CLI_BRANCH_STATE}/${PREV_CLI_VERSION} -> ${CLI_BRANCH}/${CLI_TAG}"
+            VERSION_CHANGED=true
           fi
 
           # Check if versions/channels changed
           if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
             echo "should-build=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Manual run detected; forcing build."
-          elif [ "$PATCHES_TAG" != "$PREV_PATCHES" ] || \
-               [ "$CLI_TAG" != "$PREV_CLI" ] || \
-               [ "$PATCHES_BRANCH" != "$PREV_PATCHES_BRANCH" ] || \
-               [ "$CLI_BRANCH" != "$PREV_CLI_BRANCH" ]; then
+          elif [ "$VERSION_CHANGED" = "true" ]; then
             echo "should-build=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Version/channel changes detected. Patches: $PREV_PATCHES_BRANCH/$PREV_PATCHES -> $PATCHES_BRANCH/$PATCHES_TAG, CLI: $PREV_CLI_BRANCH/$PREV_CLI -> $CLI_BRANCH/$CLI_TAG"
           else
             echo "should-build=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No version/channel changes detected. Skipping build."
@@ -185,47 +262,50 @@ jobs:
         run: |
           set -euo pipefail
 
-          PATCHES_VERSION="${{ steps.version-check.outputs.patches-version }}"
-          CLI_VERSION="${{ steps.version-check.outputs.cli-version }}"
-          PATCHES_BRANCH="${{ steps.version-check.outputs.patches-branch }}"
-          CLI_BRANCH="${{ steps.version-check.outputs.cli-branch }}"
+          CLI_TAG="${{ steps.version-check.outputs.cli-version }}"
+          CLI_REPO="$(jq -r '.cli.repo' config.json)"
+          REPO_VERSIONS='${{ steps.version-check.outputs.repo-versions }}'
 
           mkdir -p tools
 
-          echo "::notice::Downloading morphe-cli $CLI_VERSION..."
-          gh release download "$CLI_VERSION" --repo MorpheApp/morphe-cli --pattern "*.jar" --clobber || true
-
-          echo "::notice::Downloading morphe-patches $PATCHES_VERSION..."
-          gh release download "$PATCHES_VERSION" --repo MorpheApp/morphe-patches --pattern "*.mpp" --clobber || true
-
-          # Debug: list downloaded files
-          echo "::debug::Files in current directory:"
-          ls -la *.jar *.mpp 2>/dev/null || echo "No jar/mpp files found"
-
-          # Find and rename downloaded files
+          echo "::notice::Downloading morphe-cli ${CLI_TAG}..."
+          gh release download "$CLI_TAG" --repo "$CLI_REPO" --pattern "*.jar" --clobber || true
           for f in *.jar; do
-            if [ -f "$f" ]; then
-              mv "$f" tools/morphe-cli.jar 2>/dev/null && echo "::notice::Moved $f to tools/morphe-cli.jar"
-            fi
-          done
-          for f in *.mpp; do
-            if [ -f "$f" ]; then
-              mv "$f" tools/patches.mpp 2>/dev/null && echo "::notice::Moved $f to tools/patches.mpp"
-            fi
+            [ -f "$f" ] && mv "$f" tools/morphe-cli.jar && echo "::notice::Moved $f to tools/morphe-cli.jar"
           done
 
-          if [ -f tools/morphe-cli.jar ] && [ -f tools/patches.mpp ]; then
-            CLI_JAR="tools/morphe-cli.jar"
-            PATCHES_FILE="tools/patches.mpp"
-          else
-            echo "::warning::Failed to download morphe-cli/patches; using local tools if available."
-            if [ -f tools/morphe-cli.jar ] && [ -f tools/patches.mpp ]; then
-              CLI_JAR="tools/morphe-cli.jar"
-              PATCHES_FILE="tools/patches.mpp"
-            else
-              echo "::warning::Local morphe-cli/patches not found; skipping automatic URL resolution."
-              exit 0
+          # Download .mpp for each unique patch repo (slug-named)
+          REPO_PAIRS="$(jq -r '
+            .patch_repos
+            | to_entries
+            | map(.value | "\(.repo)|\(.branch | ascii_downcase)")
+            | unique[]
+          ' config.json)"
+
+          while IFS='|' read -r repo branch; do
+            slug="${repo//\//-}"
+            tag="$(echo "$REPO_VERSIONS" | jq -r --arg r "$repo" '.[$r] // empty')"
+            if [ -z "$tag" ]; then
+              echo "::error::No resolved tag for repo ${repo}. Cannot download .mpp."
+              exit 1
             fi
+            mpp_dest="tools/${slug}.mpp"
+            if [ ! -f "$mpp_dest" ]; then
+              echo "::notice::Downloading patches .mpp from ${repo}@${tag}..."
+              gh release download "$tag" --repo "$repo" --pattern "patches-*.mpp" --dir tools >/dev/null
+              # Rename the downloaded .mpp to slug-named file
+              for f in tools/patches-*.mpp; do
+                [ -f "$f" ] && mv "$f" "$mpp_dest" && echo "::notice::Saved as ${mpp_dest}"
+                break
+              done
+            else
+              echo "::notice::Using existing ${mpp_dest}"
+            fi
+          done <<< "$REPO_PAIRS"
+
+          if [ ! -f tools/morphe-cli.jar ]; then
+            echo "::warning::morphe-cli.jar not found; skipping APK version resolution."
+            exit 0
           fi
 
       - name: Cache morphe-cli and patches
@@ -234,10 +314,10 @@ jobs:
         with:
           path: |
             tools/morphe-cli.jar
-            tools/patches.mpp
-          key: morphe-tools-${{ steps.version-check.outputs.patches-version }}-${{ steps.version-check.outputs.cli-version }}
+            tools/*.mpp
+          key: morphe-tools-cli-${{ steps.version-check.outputs.cli-version }}-repos-${{ hashFiles('config.json') }}
           restore-keys: |
-            morphe-tools-${{ steps.version-check.outputs.patches-version }}-
+            morphe-tools-cli-${{ steps.version-check.outputs.cli-version }}-
             morphe-tools-
 
       - name: Download APKs using unified-downloader
@@ -261,9 +341,18 @@ jobs:
           RESULTS_FILE="$RUNNER_TEMP/download_results.json"
           echo "[]" > "$RESULTS_FILE"
 
-          for PKG in com.google.android.youtube com.google.android.apps.youtube.music com.reddit.frontpage; do
-            (
-              # Get version from morphe-cli list-versions
+          while IFS= read -r PKG; do
+              PATCH_REPO="$(jq -r --arg pkg "$PKG" '.patch_repos[$pkg].repo // empty' config.json)"
+              PATCH_SLUG="${PATCH_REPO//\//-}"
+              MPP_FILE="tools/${PATCH_SLUG}.mpp"
+
+              if [ -z "$PATCH_REPO" ] || [ ! -f "$MPP_FILE" ]; then
+                echo "::warning::No .mpp available for $PKG (repo=${PATCH_REPO:-unset}); skipping version resolution."
+                continue
+              fi
+
+              # morphe-cli list-versions reads tools/patches.mpp by default; swap in the right .mpp
+              cp "$MPP_FILE" tools/patches.mpp
               echo "Getting supported version for $PKG..."
               VERSIONS_OUTPUT=$(java -jar tools/morphe-cli.jar list-versions "$PKG" 2>/dev/null || echo "")
               echo "::debug::morphe-cli output for $PKG: $VERSIONS_OUTPUT"
@@ -273,7 +362,7 @@ jobs:
 
               if [ -z "$LATEST_VERSION" ]; then
                 echo "Could not determine version for $PKG, skipping..."
-                exit 0
+                continue
               fi
 
               echo "Downloading $PKG version $LATEST_VERSION..."
@@ -297,9 +386,7 @@ jobs:
               else
                 echo "Failed to download $PKG: $RESULT"
               fi
-            ) &
-          done
-          wait
+          done < <(jq -r '.patch_repos | keys[]' config.json)
 
           # Now process sequentially
           if [ -f "$RESULTS_FILE.tmp" ]; then
