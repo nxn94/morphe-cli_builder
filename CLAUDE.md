@@ -27,8 +27,9 @@ AutoMorpheBuilder is a GitHub Actions-based CI/CD automation project for buildin
 docker run --rm -v $(pwd):/repo ghcr.io/rhysd/actionlint:latest -color .
 
 # Validate JSON files
-jq '.' patches.json > /dev/null && echo "Valid JSON"
-jq '.' state.json > /dev/null && echo "Valid JSON"
+jq '.' patches.json > /dev/null && echo "patches.json valid"
+jq '.' config.json > /dev/null && echo "config.json valid"
+jq '.' state.json > /dev/null && echo "state.json valid"
 
 # Lint shell scripts
 shellcheck .github/scripts/*.sh
@@ -52,17 +53,18 @@ The workflow has these main jobs:
 
 | File | Purpose |
 |------|---------|
-| `patches.json` | User configuration - which patches to enable/disable, APKMirror paths, manual download URLs |
+| `patches.json` | Patch toggles only — which patches to enable/disable per app |
+| `config.json` | Build configuration — preferred arch, APKMirror paths, branch selection, cached download URLs |
 | `state.json` | Tracks Morphe versions and build history |
 | `.github/workflows/morphe-build.yml` | Main CI/CD workflow with all build logic |
-| `.github/scripts/apkmirror-*.js` | JavaScript utilities for APKMirror URL resolution |
+| `.github/scripts/unified-downloader.js` | APK downloader with fetch+cheerio APKMirror scraper |
 
 ### Download URL Resolution
 
 1. Uses `morphe-cli list-versions` to find latest Morphe-supported app version
 2. Constructs APKMirror URL using predictable format
 3. Probes variant numbers (1-15) with curl to find correct download URL
-4. Falls back to manual URLs in `patches.json` if auto-resolution fails
+4. Falls back to manual URLs in `config.json` if auto-resolution fails
 
 ### APK Selection Logic
 
@@ -81,25 +83,30 @@ The workflow has these main jobs:
 
 ## Configuration
 
+### config.json Structure
+
+```json
+{
+  "preferred_arch": "arm64-v8a",
+  "apkmirror_paths": {
+    "com.google.android.youtube": "google-inc/youtube"
+  },
+  "branches": {
+    "morphe_patches": "main",
+    "morphe_cli": "main"
+  },
+  "download_urls": {
+    "com.google.android.youtube": {
+      "latest_supported": "https://www.apkmirror.com/apk/..."
+    }
+  }
+}
+```
+
 ### patches.json Structure
 
 ```json
 {
-  "__morphe": {
-    "preferred_arch": "arm64-v8a",
-    "apkmirror_paths": {
-      "com.google.android.youtube": "google-inc/youtube"
-    },
-    "branches": {
-      "morphe_patches": "main",
-      "morphe_cli": "main"
-    },
-    "download_urls": {
-      "com.google.android.youtube": {
-        "latest_supported": "https://www.apkmirror.com/apk/..."
-      }
-    }
-  },
   "com.google.android.youtube": {
     "YouTube Vanced": true
   }
@@ -128,6 +135,6 @@ The workflow has these main jobs:
 ## Troubleshooting
 
 - Check workflow run logs in GitHub Actions for `::error::` and `::warning::` markers
-- Verify `patches.json` is valid JSON
-- Ensure APKMirror URLs in `download_urls` are still valid
+- Verify `patches.json` and `config.json` are valid JSON
+- Ensure APKMirror URLs in `config.json` `download_urls` are still valid
 - Keystore errors: verify `KEYSTORE_BASE64` decodes correctly and passwords match
