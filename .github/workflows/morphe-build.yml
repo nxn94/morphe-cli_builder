@@ -416,13 +416,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: youtube
-            appId: com.google.android.youtube
-          - name: ytmusic
-            appId: com.google.android.apps.youtube.music
-          - name: reddit
-            appId: com.reddit.frontpage
+        include: ${{ fromJSON(needs.check-versions.outputs.matrix-include) }}
 
     env:
       # Where we'll put tools/artifacts
@@ -430,9 +424,11 @@ jobs:
       TOOLS_DIR: tools
       APKS_DIR: apps
       OUT_DIR: out
-      PATCHES_VERSION: ${{ needs.check-versions.outputs.patches-version }}
+      PATCH_REPO: ${{ matrix.patchRepo }}
+      PATCH_BRANCH: ${{ matrix.patchBranch }}
+      PATCH_TAG: ${{ matrix.patchTag }}
+      PATCH_SLUG: ${{ matrix.patchSlug }}
       CLI_VERSION: ${{ needs.check-versions.outputs.cli-version }}
-      PATCHES_BRANCH: ${{ needs.check-versions.outputs.patches-branch }}
       CLI_BRANCH: ${{ needs.check-versions.outputs.cli-branch }}
 
     steps:
@@ -566,41 +562,55 @@ jobs:
         with:
           path: |
             ${{ env.TOOLS_DIR }}/morphe-cli.jar
-            ${{ env.TOOLS_DIR }}/patches.mpp
-          key: morphe-tools-${{ needs.check-versions.outputs.patches-version }}-${{ needs.check-versions.outputs.cli-version }}
+            ${{ env.TOOLS_DIR }}/${{ matrix.patchSlug }}.mpp
+          key: morphe-patches-${{ matrix.patchSlug }}-${{ matrix.patchTag }}-cli-${{ needs.check-versions.outputs.cli-version }}
           restore-keys: |
-            morphe-tools-${{ needs.check-versions.outputs.patches-version }}-
-            morphe-tools-
+            morphe-patches-${{ matrix.patchSlug }}-${{ matrix.patchTag }}-
+            morphe-patches-${{ matrix.patchSlug }}-
 
       - name: Get latest Morphe patches + CLI + APKEditor
         id: morphe
         run: |
           set -euo pipefail
 
-          # Reuse versions already resolved in check-versions job.
-          PATCHES_TAG="${PATCHES_VERSION}"
-          CLI_TAG="${CLI_VERSION}"
-          if [ -z "$PATCHES_TAG" ] || [ -z "$CLI_TAG" ]; then
-            echo "::error::Missing release version(s). patches='$PATCHES_TAG' cli='$CLI_TAG'"
+          # Validate required env vars
+          if [ -z "${PATCH_REPO:-}" ] || [ -z "${PATCH_TAG:-}" ] || [ -z "${PATCH_SLUG:-}" ]; then
+            echo "::error::PATCH_REPO/PATCH_TAG/PATCH_SLUG not set. Check check-versions matrix output."
             exit 1
           fi
-          echo "::notice::Using Morphe channels: patches=${PATCHES_BRANCH}, cli=${CLI_BRANCH}"
-          echo "::notice::Resolved Morphe versions: patches=${PATCHES_TAG}, cli=${CLI_TAG}"
 
-          # Only download patches if not already cached
-          if [ ! -f "$TOOLS_DIR/patches.mpp" ]; then
-            echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
-            gh release download "$PATCHES_TAG" \
-              --repo MorpheApp/morphe-patches \
-              --pattern 'patches-*.mpp' \
-              --dir "$TOOLS_DIR" >/dev/null
-          else
-            echo "patches_tag=$PATCHES_TAG" >> "$GITHUB_OUTPUT"
-            echo "::notice::Using cached patches.mpp"
+          CLI_TAG="${CLI_VERSION}"
+          if [ -z "$CLI_TAG" ]; then
+            echo "::error::Missing CLI release version. cli='$CLI_TAG'"
+            exit 1
           fi
 
+          MPP_DEST="$TOOLS_DIR/${PATCH_SLUG}.mpp"
+
+          # Download .mpp if not cached
+          if [ ! -f "$MPP_DEST" ]; then
+            echo "::notice::Downloading patches from ${PATCH_REPO}@${PATCH_TAG}..."
+            gh release download "$PATCH_TAG" \
+              --repo "$PATCH_REPO" \
+              --pattern 'patches-*.mpp' \
+              --dir "$TOOLS_DIR" >/dev/null
+            # Rename to slug-named file
+            for f in "$TOOLS_DIR"/patches-*.mpp; do
+              [ -f "$f" ] && mv "$f" "$MPP_DEST" && echo "::notice::Saved as ${MPP_DEST}"
+              break
+            done
+          else
+            echo "::notice::Using cached ${MPP_DEST}"
+          fi
+
+          if [ ! -f "$MPP_DEST" ]; then
+            echo "::error::Failed to obtain ${MPP_DEST} from ${PATCH_REPO}@${PATCH_TAG}."
+            exit 1
+          fi
+          echo "patches_tag=${PATCH_TAG}" >> "$GITHUB_OUTPUT"
+
           # Always fetch patches-list.json (small file, always needed)
-          curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
+          curl -fsSL "https://raw.githubusercontent.com/${PATCH_REPO}/${PATCH_TAG}/patches-list.json" \
             -o "$TOOLS_DIR/patches-list.json"
 
           if [ ! -f "$TOOLS_DIR/morphe-cli.jar" ]; then
@@ -638,79 +648,16 @@ jobs:
           echo "apkeditor_jar=$APKEDITOR_JAR_PATH" >> "$GITHUB_OUTPUT"
           echo "::notice::Downloaded APKEditor ${APKEDITOR_TAG}: ${APKEDITOR_ASSET}"
 
-      - name: Sync patches.json with latest patches (preserve edits)
-        run: |
-          set -euo pipefail
-
-          DEFAULTS_FILE="$RUNNER_TEMP/default_patches.json"
-          EXISTING_FILE="$RUNNER_TEMP/existing_patches.json"
-          PKGS='["com.google.android.youtube","com.google.android.apps.youtube.music","com.reddit.frontpage"]'
-
-          # Build defaults for all known apps from the latest patches list.
-          # This handles both object-style and array-style compatibility schemas.
-          jq --argjson pkgs "$PKGS" '
-            . as $src
-            |
-            def compat_pkg_names($patch):
-              if ($patch.compatiblePackages? | type) == "object" then
-                ($patch.compatiblePackages | keys)
-              elif ($patch.compatible_packages? | type) == "object" then
-                ($patch.compatible_packages | keys)
-              elif ($patch.compatiblePackages? | type) == "array" then
-                ($patch.compatiblePackages | map(.name // .packageName // empty))
-              elif ($patch.compatible_packages? | type) == "array" then
-                ($patch.compatible_packages | map(.name // .packageName // empty))
-              else
-                []
-              end;
-
-            reduce $pkgs[] as $pkg ({};
-              .[$pkg] = (
-                reduce (
-                  (($src.patches // $src)[])
-                  | select((compat_pkg_names(.) | index($pkg)) != null)
-                  | .name
-                ) as $name
-                ({};
-                  .[$name] = true
-                )
-              )
-            )
-          ' "$TOOLS_DIR/patches-list.json" > "$DEFAULTS_FILE"
-
-          # Load existing user config if valid JSON, otherwise start fresh.
-          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
-            cp patches.json "$EXISTING_FILE"
-          else
-            if [ -f patches.json ]; then
-              echo "::warning::Existing patches.json is invalid JSON; regenerating from defaults."
-            fi
-            echo '{}' > "$EXISTING_FILE"
-          fi
-
-          # Merge defaults with existing file, preserving user-edited values.
-          jq -n --slurpfile defaults "$DEFAULTS_FILE" --slurpfile existing "$EXISTING_FILE" '
-            ($defaults[0] // {}) as $d
-            | ($existing[0] // {}) as $e
-            | ($e | if type == "object" then . else {} end) as $base
-            | reduce ($d | keys[]) as $pkg ($base;
-                .[$pkg] = (
-                  ($d[$pkg] // {})
-                  * ((.[$pkg] // {}) | if type == "object" then . else {} end)
-                )
-              )
-          ' > patches.json.tmp
-          mv patches.json.tmp patches.json
-
-          echo "::notice::Synced patches.json with latest available patches while preserving existing edits."
-          jq 'keys' patches.json
-
       - name: Resolve supported version for ${{ matrix.appId }}
         id: targetver
         run: |
           set -euo pipefail
 
-          DISABLED_PATCHES_JSON="$(jq -c --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries | map(select(.value == false) | .key)' patches.json)"
+          DISABLED_PATCHES_JSON="$(jq -c \
+            --arg repo "$PATCH_REPO" \
+            --arg pkg "${{ matrix.appId }}" \
+            '.[$repo][$pkg] // {} | to_entries | map(select(.value == false) | .key)' \
+            patches.json 2>/dev/null || echo '[]')"
 
           STRICT_VERSIONS="$(
             jq -r \
@@ -1418,7 +1365,11 @@ jobs:
         run: |
           set -euo pipefail
           JAR="$(ls -1 $TOOLS_DIR/morphe-cli*.jar | head -n1)"
-          MPP="$(ls -1 $TOOLS_DIR/patches*.mpp | head -n1)"
+          MPP="$TOOLS_DIR/${PATCH_SLUG}.mpp"
+          if [ ! -f "$MPP" ]; then
+            echo "::error::Patch file not found: $MPP"
+            exit 1
+          fi
           APK="${{ steps.getapk.outputs.apk }}"
           APK_VERSION="${{ steps.getapk.outputs.version }}"
           APK_NORM="${APK#./}"
@@ -1442,8 +1393,19 @@ jobs:
           KEY_ARGS=(--keystore="$KEYSTORE_FILE" --keystore-password="$KEYSTORE_PASSWORD" --keystore-entry-alias="$KEY_ALIAS" --keystore-entry-password="$KEY_ENTRY_PASS")
 
           # Build enabled/disabled lists from patches.json and pass disabled ones to morphe-cli.
-          ENABLED_PATCHES="$(jq -r --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries[] | select(.value == true) | .key' patches.json || true)"
-          DISABLED_PATCHES="$(jq -r --arg pkg "${{ matrix.appId }}" '.[$pkg] // {} | to_entries[] | select(.value == false) | .key' patches.json || true)"
+          ENABLED_PATCHES="$(jq -r \
+            --arg repo "$PATCH_REPO" \
+            --arg pkg "${{ matrix.appId }}" \
+            '.[$repo][$pkg] // {} | to_entries[] | select(.value == true) | .key' \
+            patches.json 2>/dev/null || true)"
+          DISABLED_PATCHES="$(jq -r \
+            --arg repo "$PATCH_REPO" \
+            --arg pkg "${{ matrix.appId }}" \
+            '.[$repo][$pkg] // {} | to_entries[] | select(.value == false) | .key' \
+            patches.json 2>/dev/null || true)"
+          if [ -z "$ENABLED_PATCHES" ] && [ -z "$DISABLED_PATCHES" ]; then
+            echo "::warning::No patches.json entry for ${PATCH_REPO}/${{ matrix.appId }}; applying all patches."
+          fi
           ENABLED_COUNT="$(printf '%s\n' "$ENABLED_PATCHES" | sed '/^$/d' | wc -l | tr -d ' ')"
           DISABLED_COUNT="$(printf '%s\n' "$DISABLED_PATCHES" | sed '/^$/d' | wc -l | tr -d ' ')"
 
@@ -1544,14 +1506,14 @@ jobs:
           fi
           
           # Rename with version info
-          OUTPUT_NAME="${{ matrix.name }}-${PATCHES_VERSION}-v${APK_VERSION}.apk"
+          OUTPUT_NAME="${{ matrix.name }}-${PATCH_TAG}-v${APK_VERSION}.apk"
           mv "$OUT_APK" "$OUT_DIR/$OUTPUT_NAME"
           echo "output=$OUTPUT_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload patched ${{ matrix.name }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}-${{ env.PATCHES_VERSION }}-v${{ steps.getapk.outputs.version }}
+          name: ${{ matrix.name }}-${{ matrix.patchTag }}-v${{ steps.getapk.outputs.version }}
           path: out/${{ steps.patch.outputs.output }}
 
   create-release:
