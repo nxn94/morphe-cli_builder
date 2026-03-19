@@ -29,13 +29,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Read channel selection from patches.json metadata.
+          # Read channel selection from config.json.
           # Supported values: main, dev.
           PATCHES_BRANCH="main"
           CLI_BRANCH="main"
-          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
-            PATCHES_BRANCH="$(jq -r '(.["__morphe"]?.branches?.morphe_patches // "main") | ascii_downcase' patches.json)"
-            CLI_BRANCH="$(jq -r '(.["__morphe"]?.branches?.morphe_cli // "main") | ascii_downcase' patches.json)"
+          if [ -s config.json ] && jq -e 'type=="object"' config.json >/dev/null 2>&1; then
+            PATCHES_BRANCH="$(jq -r '(.branches?.morphe_patches // "main") | ascii_downcase' config.json)"
+            CLI_BRANCH="$(jq -r '(.branches?.morphe_cli // "main") | ascii_downcase' config.json)"
           fi
 
           if [ "$PATCHES_BRANCH" != "main" ] && [ "$PATCHES_BRANCH" != "dev" ]; then
@@ -584,7 +584,7 @@ jobs:
           ' "$TOOLS_DIR/patches-list.json" > "$DEFAULTS_FILE"
 
           # Load existing user config if valid JSON, otherwise start fresh.
-          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
+          if [ -s config.json ] && jq -e 'type=="object"' config.json >/dev/null 2>&1; then
             cp patches.json "$EXISTING_FILE"
           else
             if [ -f patches.json ]; then
@@ -1606,7 +1606,7 @@ jobs:
             )
           ' "$PATCHES_LIST_FILE" > "$DEFAULTS_FILE"
 
-          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
+          if [ -s config.json ] && jq -e 'type=="object"' config.json >/dev/null 2>&1; then
             cp patches.json "$EXISTING_FILE"
           else
             echo '{}' > "$EXISTING_FILE"
