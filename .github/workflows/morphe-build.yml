@@ -1632,7 +1632,6 @@ ${PATCHES_SUMMARY}
         run: |
           set -euo pipefail
 
-          PKGS="$(jq -c '.patch_repos | keys' config.json)"
           REPO_VERSIONS='${{ needs.check-versions.outputs.repo-versions }}'
           BEFORE_STATE_HASH="$(
             if [ -f state.json ]; then sha256sum state.json | awk '{print $1}'; else echo "missing"; fi
