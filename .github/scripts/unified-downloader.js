@@ -550,16 +550,11 @@ function loadExistingUrl(packageId, version) {
     return null;
   }
 
-  // Check for exact version match first
+  // Check for exact version match only — latest_supported is for a specific old version
+  // and cannot be used as a direct download URL for a different version
   if (downloadUrls[version]) {
     console.error(`Found existing URL for version ${version} in config.json`);
     return downloadUrls[version];
-  }
-
-  // Also check if it's the latest_supported
-  if (downloadUrls.latest_supported) {
-    console.error(`Using latest_supported URL from config.json`);
-    return downloadUrls.latest_supported;
   }
 
   return null;
@@ -1058,14 +1053,10 @@ async function downloadWithApkmirror(packageId, version, outputDir) {
  * Page 2: Variant page → find download button
  * Page 3: Download page → find final APK link
  */
-async function resolveApkmirrorUrl(apkmirrorPath, version) {
-  const config = loadConfig();
-  const preferredArch = config.preferred_arch || 'arm64-v8a';
-  const priorities = buildVariantPriorities(preferredArch);
-
+async function resolveApkmirrorUrlViaCurl(apkmirrorPath, version, priorities) {
   // Page 1: Release page
   const page1Url = buildReleasePageUrl(apkmirrorPath, version);
-  console.error(`[apkmirror-scraper] Page 1: ${page1Url}`);
+  console.error(`[apkmirror-scraper] Page 1 (curl): ${page1Url}`);
   const resp1 = await apkmirrorFetch(page1Url);
   let cookies = collectCookies(resp1);
   const $1 = cheerio.load(await resp1.text());
@@ -1074,7 +1065,7 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
 
   // Page 2: Variant page
   const page2Url = `https://www.apkmirror.com${variantHref}`;
-  console.error(`[apkmirror-scraper] Page 2: ${page2Url}`);
+  console.error(`[apkmirror-scraper] Page 2 (curl): ${page2Url}`);
   const resp2 = await apkmirrorFetch(page2Url, cookies, page1Url);
   cookies = collectCookies(resp2, cookies);
   const $2 = cheerio.load(await resp2.text());
@@ -1086,7 +1077,7 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
 
   // Page 3: Download page
   const page3Url = `https://www.apkmirror.com${downloadButtonHref}`;
-  console.error(`[apkmirror-scraper] Page 3: ${page3Url}`);
+  console.error(`[apkmirror-scraper] Page 3 (curl): ${page3Url}`);
   const resp3 = await apkmirrorFetch(page3Url, cookies, page2Url);
   cookies = collectCookies(resp3, cookies);
   const $3 = cheerio.load(await resp3.text());
@@ -1103,8 +1094,88 @@ async function resolveApkmirrorUrl(apkmirrorPath, version) {
     ? finalHref
     : `https://www.apkmirror.com${finalHref}`;
 
-  console.error(`[apkmirror-scraper] Resolved: ${finalUrl}`);
+  console.error(`[apkmirror-scraper] Resolved (curl): ${finalUrl}`);
   return finalUrl;
+}
+
+/**
+ * Resolve APKMirror download URL using Playwright (Chromium).
+ * Used as fallback when curl is blocked by Cloudflare (HTTP 403).
+ * Chromium's TLS fingerprint passes bot detection that curl cannot.
+ */
+async function resolveApkmirrorUrlViaPlaywright(apkmirrorPath, version, priorities) {
+  console.error(`[apkmirror-scraper] Using Playwright fallback for ${apkmirrorPath} v${version}`);
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+  });
+
+  try {
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0',
+      locale: 'en-US',
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-US,en;q=0.9',
+        'DNT': '1',
+      },
+    });
+    const page = await context.newPage();
+
+    // Page 1: Release page
+    const page1Url = buildReleasePageUrl(apkmirrorPath, version);
+    console.error(`[apkmirror-scraper] Page 1 (PW): ${page1Url}`);
+    await page.goto(page1Url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const html1 = await page.content();
+    const $1 = cheerio.load(html1);
+    const variantHref = selectVariant($1, priorities);
+
+    // Page 2: Variant page
+    const page2Url = `https://www.apkmirror.com${variantHref}`;
+    console.error(`[apkmirror-scraper] Page 2 (PW): ${page2Url}`);
+    await page.goto(page2Url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const html2 = await page.content();
+    const $2 = cheerio.load(html2);
+    const downloadButtonHref = $2('a.downloadButton[href]').attr('href');
+    if (!downloadButtonHref) throw new Error('Download button not found on APKMirror variant page');
+
+    // Page 3: Download page
+    const page3Url = `https://www.apkmirror.com${downloadButtonHref}`;
+    console.error(`[apkmirror-scraper] Page 3 (PW): ${page3Url}`);
+    await page.goto(page3Url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const html3 = await page.content();
+    const $3 = cheerio.load(html3);
+    const finalHref =
+      $3('a[data-google-interstitial="false"][href]').attr('href') ||
+      $3('a[rel=nofollow][href*=".apk"]').attr('href');
+    if (!finalHref) throw new Error('Final APK download link not found on APKMirror download page');
+
+    const finalUrl = finalHref.startsWith('http')
+      ? finalHref
+      : `https://www.apkmirror.com${finalHref}`;
+    console.error(`[apkmirror-scraper] Resolved (PW): ${finalUrl}`);
+    return finalUrl;
+  } finally {
+    await browser.close();
+  }
+}
+
+async function resolveApkmirrorUrl(apkmirrorPath, version) {
+  const config = loadConfig();
+  const preferredArch = config.preferred_arch || 'arm64-v8a';
+  const priorities = buildVariantPriorities(preferredArch);
+
+  // Try curl first (fast, no browser overhead)
+  try {
+    return await resolveApkmirrorUrlViaCurl(apkmirrorPath, version, priorities);
+  } catch (e) {
+    // Fall back to Playwright when Cloudflare blocks curl (HTTP 403)
+    if (e.message.includes('403')) {
+      console.error(`[apkmirror-scraper] curl blocked by Cloudflare, switching to Playwright`);
+      return await resolveApkmirrorUrlViaPlaywright(apkmirrorPath, version, priorities);
+    }
+    throw e;
+  }
 }
 
 /**
