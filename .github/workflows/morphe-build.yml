@@ -1615,7 +1615,7 @@ jobs:
           jq -n --slurpfile defaults "$DEFAULTS_FILE" --slurpfile existing "$EXISTING_FILE" '
             ($defaults[0] // {}) as $d
             | ($existing[0] // {}) as $e
-            | ($e | if type == "object" then . else {} end) as $base
+            | ($e | if type == "object" then . else {} end | del(.__morphe)) as $base
             | reduce ($d | keys[]) as $pkg ($base;
                 .[$pkg] = (
                   ($d[$pkg] // {})
@@ -1686,7 +1686,7 @@ jobs:
           set -euo pipefail
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add state.json patches.json
+          git add state.json patches.json config.json
 
           if git diff --cached --quiet; then
             echo "::error::No state/patches changes detected after update step; refusing silent success."
