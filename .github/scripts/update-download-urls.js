@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Update download URLs in patches.json
+ * Update download URLs in config.json
  * Usage: node update-download-urls.js <package_id> <version> <url>
  */
 
@@ -20,44 +20,37 @@ function main() {
   }
 
   const [packageId, version, url] = args;
-  const patchesPath = path.join(process.cwd(), 'patches.json');
+  const configPath = path.join(process.cwd(), 'config.json');
 
   try {
-    // Read patches.json
-    let patches;
+    let config;
     try {
-      const content = fs.readFileSync(patchesPath, 'utf8');
-      patches = JSON.parse(content);
+      const content = fs.readFileSync(configPath, 'utf8');
+      config = JSON.parse(content);
     } catch (err) {
       if (err.code === 'ENOENT') {
         console.log(JSON.stringify({
           success: false,
-          error: 'patches.json not found in current directory'
+          error: 'config.json not found in current directory'
         }, null, 2));
         process.exit(1);
       }
       throw err;
     }
 
-    // Initialize __morphe.download_urls if it doesn't exist
-    if (!patches.__morphe) {
-      patches.__morphe = {};
+    // Initialize download_urls if needed
+    if (!config.download_urls) {
+      config.download_urls = {};
     }
-    if (!patches.__morphe.download_urls) {
-      patches.__morphe.download_urls = {};
-    }
-    if (!patches.__morphe.download_urls[packageId]) {
-      patches.__morphe.download_urls[packageId] = {};
+    if (!config.download_urls[packageId]) {
+      config.download_urls[packageId] = {};
     }
 
-    // Update the URL for the specific version
-    patches.__morphe.download_urls[packageId][version] = url;
+    // Update the URL for the specific version and latest_supported
+    config.download_urls[packageId][version] = url;
+    config.download_urls[packageId].latest_supported = url;
 
-    // Update latest_supported
-    patches.__morphe.download_urls[packageId].latest_supported = url;
-
-    // Write back to patches.json with pretty formatting
-    fs.writeFileSync(patchesPath, JSON.stringify(patches, null, 2) + '\n', 'utf8');
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
 
     console.log(JSON.stringify({
       success: true,
