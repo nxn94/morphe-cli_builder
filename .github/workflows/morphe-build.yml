@@ -462,7 +462,10 @@ jobs:
 
       - name: Install Playwright browsers (fallback if artifact not available)
         run: |
-          if [ ! -d ~/.cache/ms-playwright/chromium-* ]; then
+          # Restore execute permissions lost during artifact upload/download
+          find ~/.cache/ms-playwright -name 'chrome-headless-shell' -o -name 'chrome' 2>/dev/null | xargs -r chmod +x
+          # Install if not present at all
+          if ! find ~/.cache/ms-playwright -name 'chrome-headless-shell' 2>/dev/null | grep -q .; then
             npx playwright install chromium
           fi
 
