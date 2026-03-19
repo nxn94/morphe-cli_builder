@@ -54,6 +54,11 @@ jobs:
             | unique[]
           ' config.json)"
 
+          if [ -z "$REPO_PAIRS" ]; then
+            echo "::error::No valid patch_repos entries found in config.json."
+            exit 1
+          fi
+
           resolve_release_tag() {
             local repo="$1"
             local branch="$2"
