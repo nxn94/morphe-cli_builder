@@ -1563,7 +1563,7 @@ jobs:
           **CLI version:** ${CLI_VERSION}
 
           **Patch repo versions:**
-${PATCHES_SUMMARY}
+          ${PATCHES_SUMMARY}
 
           ## Available APKs
           $(ls -1 apks/*.apk | xargs -I {} basename {})
