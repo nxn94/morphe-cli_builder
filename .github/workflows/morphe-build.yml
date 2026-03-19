@@ -1000,6 +1000,12 @@ jobs:
               echo "::notice::APK version validated: $(basename "$apk_file") is v$apk_version (matches target)"
               APK_VALID=true
               break
+            elif [ -z "$apk_version" ]; then
+              # aapt couldn't read the version (not installed or unsupported format)
+              # unified-downloader already validated the version, so accept the APK
+              echo "::warning::Could not read APK version via aapt (aapt unavailable); trusting unified-downloader validation"
+              APK_VALID=true
+              break
             else
               echo "::warning::APK has wrong version: $(basename "$apk_file") is v$apk_version but wanted v$TARGET_VERSION - removing"
               rm -f "$apk_file"
