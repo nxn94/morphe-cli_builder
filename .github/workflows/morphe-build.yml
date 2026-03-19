@@ -131,7 +131,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.version-check.outputs.should-build == 'true'
-        run: npm install --no-save playwright
+        run: npm ci
 
       - name: Cache Playwright browsers
         if: steps.version-check.outputs.should-build == 'true'
@@ -451,7 +451,7 @@ jobs:
           node-version: '20'
 
       - name: Install Playwright
-        run: npm install --no-save playwright
+        run: npm ci
 
       - name: Download Playwright browsers from check-versions
         uses: actions/download-artifact@v4
