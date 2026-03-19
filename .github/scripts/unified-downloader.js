@@ -18,6 +18,7 @@ const path = require("node:path");
 const { execFile, spawn } = require("child_process");
 const { chromium } = require("playwright");
 const os = require("node:os");
+const cheerio = require('cheerio');
 
 // APKMirror API credentials
 const APK_MIRROR_API_USER = "api-apkupdater";
@@ -35,6 +36,111 @@ const APK_MIRROR_PATHS = {
   "com.google.android.apps.youtube.music": "google-inc/youtube-music",
   "com.reddit.frontpage": "redditinc/reddit"
 };
+
+/**
+ * Build APKMirror release page URL for a given version.
+ * Slug is derived from the last path component of apkmirrorPath.
+ * e.g. "google-inc/youtube" + "20.44.38" → ".../youtube-20-44-38-release/"
+ */
+function buildReleasePageUrl(apkmirrorPath, version) {
+  const slug = apkmirrorPath.split('/').pop();
+  const versionSlug = version.replace(/\./g, '-');
+  return `https://www.apkmirror.com/apk/${apkmirrorPath}/${slug}-${versionSlug}-release/`;
+}
+
+/**
+ * Build ordered variant priority list from preferred arch.
+ * Priority: preferred APK → preferred BUNDLE → universal APK → universal BUNDLE → noarch APK
+ */
+function buildVariantPriorities(preferredArch) {
+  return [
+    { arch: preferredArch, dpi: 'nodpi', type: 'APK' },
+    { arch: preferredArch, dpi: 'nodpi', type: 'BUNDLE' },
+    { arch: 'universal',   dpi: 'nodpi', type: 'APK' },
+    { arch: 'universal',   dpi: 'nodpi', type: 'BUNDLE' },
+    { arch: 'noarch',      dpi: 'nodpi', type: 'APK' },
+  ];
+}
+
+/**
+ * Parse variant table rows from a cheerio-loaded release page.
+ * Returns the href of the first row matching the priority list.
+ * Throws with available variants if nothing matches.
+ */
+function selectVariant($, priorities) {
+  const rows = [];
+  $('.table-row').each((_, row) => {
+    const cells = $(row).find('.table-cell').map((_, c) => $(c).text().trim()).get();
+    if (cells.length < 4) return;
+    const href = $(row).find('a[href*="/apk/"]').attr('href');
+    if (!href) return;
+    rows.push({
+      dpi:  cells[1]?.toLowerCase() ?? '',
+      arch: cells[2]?.toLowerCase() ?? '',
+      type: cells[3]?.toUpperCase() ?? '',
+      href,
+    });
+  });
+
+  for (const { arch, dpi, type } of priorities) {
+    const match = rows.find(r =>
+      r.arch.includes(arch.toLowerCase()) &&
+      r.dpi === dpi.toLowerCase() &&
+      r.type === type
+    );
+    if (match) return match.href;
+  }
+
+  const found = rows.map(r => `${r.arch}/${r.dpi}/${r.type}`).join(', ') || 'none';
+  throw new Error(`No matching variant found on APKMirror. Available: ${found}`);
+}
+
+/**
+ * Collect cookies from a fetch Response's Set-Cookie headers into a plain object.
+ * Uses getSetCookie() which returns an array — safe for multi-cookie responses.
+ * Merges with any existing cookies.
+ */
+function collectCookies(response, existing = {}) {
+  const setCookies = response.headers.getSetCookie?.() ?? [];
+  if (setCookies.length === 0) return existing;
+  const cookies = { ...existing };
+  for (const cookie of setCookies) {
+    const [pair] = cookie.split(';');
+    const eqIdx = pair.indexOf('=');
+    if (eqIdx < 1) continue;
+    cookies[pair.slice(0, eqIdx).trim()] = pair.slice(eqIdx + 1).trim();
+  }
+  return cookies;
+}
+
+/**
+ * Make a fetch request with browser-like headers and cookie forwarding.
+ * Throws on non-OK responses or timeout.
+ */
+async function apkmirrorFetch(url, cookies = {}, referer = null) {
+  const headers = {
+    'User-Agent':      'Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0',
+    'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'DNT':             '1',
+  };
+  if (referer) headers['Referer'] = referer;
+  if (Object.keys(cookies).length > 0) {
+    headers['Cookie'] = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch(url, { headers, redirect: 'follow', signal: controller.signal });
+    clearTimeout(timeout);
+    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+    return response;
+  } catch (e) {
+    clearTimeout(timeout);
+    throw e;
+  }
+}
 
 /**
  * Check URL cache for a package version
@@ -916,150 +1022,64 @@ async function downloadWithApkmirror(packageId, version, outputDir) {
   };
 }
 
+function loadConfig() {
+  const configPath = path.join(__dirname, '../../config.json');
+  return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+}
+
 /**
- * Resolve APKMirror download URL using Playwright with improved Cloudflare handling
+ * Resolve APKMirror direct APK download URL using fetch + cheerio (3-page navigation).
+ * Page 1: Release page → find correct arch/DPI/type variant row
+ * Page 2: Variant page → find download button
+ * Page 3: Download page → find final APK link
  */
 async function resolveApkmirrorUrl(apkmirrorPath, version) {
-  const baseUrl = `https://www.apkmirror.com/apk/${apkmirrorPath}/`;
-  const variantUrl = `${baseUrl}${version.replace(/\./g, "-")}-release/`;
+  const config = loadConfig();
+  const preferredArch = config.preferred_arch || 'arm64-v8a';
+  const priorities = buildVariantPriorities(preferredArch);
 
-  // More realistic user agent
-  const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+  // Page 1: Release page
+  const page1Url = buildReleasePageUrl(apkmirrorPath, version);
+  console.error(`[apkmirror-scraper] Page 1: ${page1Url}`);
+  const resp1 = await apkmirrorFetch(page1Url);
+  let cookies = collectCookies(resp1);
+  const $1 = cheerio.load(await resp1.text());
 
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      "--disable-blink-features=AutomationControlled",
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--disable-default-apps",
-      "--disable-sync",
-      "--metrics-recording-only",
-      "--mute-audio",
-      "--no-first-run",
-      "--safebrowsing-disable-auto-update"
-    ]
-  });
+  const variantHref = selectVariant($1, priorities);
 
-  const context = await browser.newContext({
-    userAgent: UA,
-    viewport: { width: 1920, height: 1080 },
-    locale: "en-US",
-    timezoneId: "America/New_York",
-    permissions: ["geolocation"],
-    extraHTTPHeaders: {
-      "Accept-Language": "en-US,en;q=0.9",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-    }
-  });
+  // Page 2: Variant page
+  const page2Url = `https://www.apkmirror.com${variantHref}`;
+  console.error(`[apkmirror-scraper] Page 2: ${page2Url}`);
+  const resp2 = await apkmirrorFetch(page2Url, cookies, page1Url);
+  cookies = collectCookies(resp2, cookies);
+  const $2 = cheerio.load(await resp2.text());
 
-  // Add stealth scripts
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
-    window.chrome = { runtime: {} };
-    // Override permissions
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-      parameters.name === 'notifications' ?
-        Promise.resolve({ state: Notification.permission }) :
-        originalQuery(parameters)
-    );
-  });
-
-  const page = await context.newPage();
-
-  // Track if we hit Cloudflare
-  let cloudflareAttempts = 0;
-  const maxCloudflareAttempts = 3;
-
-  const waitForCloudflare = async () => {
-    const title = await page.title();
-    if (title.includes("Just a moment") || title.includes("cloudflare") || title.includes("Checking your browser")) {
-      cloudflareAttempts++;
-      console.error(`[apkmirror] Cloudflare challenge detected, attempt ${cloudflareAttempts}/${maxCloudflareAttempts}`);
-      if (cloudflareAttempts >= maxCloudflareAttempts) {
-        throw new Error("Cloudflare challenge failed after multiple attempts");
-      }
-      await page.waitForTimeout(10000); // Wait longer for Cloudflare
-      return true;
-    }
-    return false;
-  };
-
-  try {
-    // Try variant URL first
-    console.error(`[apkmirror] Trying variant URL: ${variantUrl}`);
-    await page.goto(variantUrl, { timeout: 60000, waitUntil: "domcontentloaded" });
-
-    // Wait for Cloudflare
-    await page.waitForTimeout(5000);
-    await waitForCloudflare();
-
-    // Additional wait for page to fully load
-    await page.waitForTimeout(3000);
-
-    const title = await page.title();
-    console.error(`[apkmirror] Page title: ${title}`);
-
-    if (title.includes("404") || title.includes("Not Found") || title.includes("File not found")) {
-      // Try base URL to find correct version
-      console.error(`[apkmirror] Version not found, trying base URL`);
-      await page.goto(baseUrl, { timeout: 60000, waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(5000);
-      await waitForCloudflare();
-    }
-
-    // Skip anchor links (#all_versions) - these are not actual downloads
-    // Find download link that is NOT an anchor
-    const downloadLink = await page.$('a.downloadButton[href^="/apk/"], a[class*="downloadButton"][href^="/apk/"], a.btn[href^="/apk/"]');
-    if (downloadLink) {
-      const href = await downloadLink.getAttribute("href");
-      console.error(`[apkmirror] Found download link: ${href}`);
-      await browser.close();
-      return `https://www.apkmirror.com${href}`;
-    }
-
-    // Try to find version-specific link
-    const versionSlug = version.replace(/\./g, "-");
-    let versionLinks = await page.$$eval('a[href*="release"]', (links, vSlug) =>
-      links.map(l => l.href).filter(h => h.includes(vSlug) && !h.includes("#")), versionSlug
-    );
-
-    console.error(`[apkmirror] Found ${versionLinks.length} version links for exact version`);
-
-    // If exact version not found, try to get the latest version available
-    if (versionLinks.length === 0) {
-      console.error(`[apkmirror] Exact version not found, trying to get latest available version...`);
-
-      // Get the first available version from the page (exclude anchor links)
-      // Use the correct path for this package (e.g., /youtube/ or /youtube-music/)
-      const searchPath = "/" + apkmirrorPath + "/";
-      const allVersionLinks = await page.$$eval('a[href*="release"]', (links, search) =>
-        links.map(l => l.href).filter(h => h.includes(search) && h.includes("-release") && !h.includes("#"))
-      , searchPath);
-
-      if (allVersionLinks.length > 0) {
-        console.error(`[apkmirror] Found ${allVersionLinks.length} available versions, using first one`);
-        await browser.close();
-        return allVersionLinks[0];
-      }
-    }
-
-    if (versionLinks.length > 0) {
-      await browser.close();
-      return versionLinks[0];
-    }
-
-    throw new Error("Could not find download URL on APKMirror");
-  } finally {
-    await browser.close();
+  const downloadButtonHref = $2('a.downloadButton[href]').attr('href');
+  if (!downloadButtonHref) {
+    throw new Error('Download button not found on APKMirror variant page');
   }
+
+  // Page 3: Download page
+  const page3Url = `https://www.apkmirror.com${downloadButtonHref}`;
+  console.error(`[apkmirror-scraper] Page 3: ${page3Url}`);
+  const resp3 = await apkmirrorFetch(page3Url, cookies, page2Url);
+  cookies = collectCookies(resp3, cookies);
+  const $3 = cheerio.load(await resp3.text());
+
+  const finalHref =
+    $3('a[data-google-interstitial="false"][href]').attr('href') ||
+    $3('a[rel=nofollow][href*=".apk"]').attr('href');
+
+  if (!finalHref) {
+    throw new Error('Final APK download link not found on APKMirror download page');
+  }
+
+  const finalUrl = finalHref.startsWith('http')
+    ? finalHref
+    : `https://www.apkmirror.com${finalHref}`;
+
+  console.error(`[apkmirror-scraper] Resolved: ${finalUrl}`);
+  return finalUrl;
 }
 
 /**
@@ -1655,4 +1675,16 @@ async function main() {
   }
 }
 
-main();
+// Guard: only run main() when executed directly, not when require()'d by tests
+if (require.main === module) {
+  main();
+}
+
+// Export helpers for testing and external use
+module.exports = {
+  buildReleasePageUrl,
+  buildVariantPriorities,
+  selectVariant,
+  collectCookies,
+  resolveApkmirrorUrl,
+};
