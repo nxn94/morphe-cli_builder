@@ -732,20 +732,47 @@ jobs:
             exit 1
           fi
 
+      - name: Cache APK for ${{ matrix.appId }}
+        id: cache-apk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.APKS_DIR }}
+          key: apk-${{ matrix.appId }}-${{ steps.targetver.outputs.version }}
+          restore-keys: apk-${{ matrix.appId }}-
+
       - name: Download supported APK for ${{ matrix.appId }}
         id: getapk
         run: |
           set -euo pipefail
-          
+
           echo "::notice::Downloading APK for ${{ matrix.appId }}..."
           APP_ID="${{ matrix.appId }}"
           TARGET_VERSION="${{ steps.targetver.outputs.version }}"
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
           APKEDITOR_JAR="${{ steps.morphe.outputs.apkeditor_jar }}"
-          
+
           # Create output directory if it doesn't exist
           mkdir -p "$APKS_DIR"
-          rm -f "$APKS_DIR"/* || true
+
+          # Check if a cached APK matching the target version is already present
+          DOWNLOAD_SUCCESS=false
+          CACHED_APK=""
+          for ext in apk xapk apkm apks; do
+            while IFS= read -r apk; do
+              [ -z "$apk" ] && continue
+              apk_ver=$(basename "$apk" | grep -oE '[0-9]+(\.[0-9]+){2,}' | head -n1 || true)
+              if [ "$apk_ver" = "$TARGET_VERSION" ]; then
+                CACHED_APK="$apk"
+                break 2
+              fi
+            done < <(find "$APKS_DIR" -maxdepth 1 -type f -name "*.$ext" 2>/dev/null || true)
+          done
+
+          if [ -n "$CACHED_APK" ]; then
+            echo "::notice::Using cached APK: $CACHED_APK (v$TARGET_VERSION)"
+            DOWNLOAD_SUCCESS=true
+          else
+            rm -f "$APKS_DIR"/* || true
 
           # Manual source URL override (fallback).
           # config.json shape:
@@ -1006,6 +1033,7 @@ jobs:
               fi
             fi
           fi
+          fi  # end: no cached APK
 
           if [ "$DOWNLOAD_SUCCESS" = false ]; then
             echo "::error::No APK could be downloaded for $APP_ID version $TARGET_VERSION."
