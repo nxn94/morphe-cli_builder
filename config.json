@@ -6,9 +6,26 @@
     "com.google.android.apps.youtube.music": "google-inc/youtube-music",
     "com.reddit.frontpage": "redditinc/reddit"
   },
-  "branches": {
-    "morphe_patches": "dev",
-    "morphe_cli": "dev"
+  "patch_repos": {
+    "com.google.android.youtube": {
+      "name": "youtube",
+      "repo": "MorpheApp/morphe-patches",
+      "branch": "dev"
+    },
+    "com.google.android.apps.youtube.music": {
+      "name": "ytmusic",
+      "repo": "MorpheApp/morphe-patches",
+      "branch": "dev"
+    },
+    "com.reddit.frontpage": {
+      "name": "reddit",
+      "repo": "MorpheApp/morphe-patches",
+      "branch": "dev"
+    }
+  },
+  "cli": {
+    "repo": "MorpheApp/morphe-cli",
+    "branch": "dev"
   },
   "download_urls": {
     "com.google.android.youtube": {
