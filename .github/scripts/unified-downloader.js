@@ -30,12 +30,18 @@ const CACHE_DIR = path.join(os.homedir(), ".cache", "auto-morphe-builder", "apks
 // URL cache directory - stores resolved URLs as JSON
 const URL_CACHE_DIR = path.join(os.homedir(), ".cache", "auto-morphe-builder", "urls");
 
-// APKMirror paths mapping
-const APK_MIRROR_PATHS = {
-  "com.google.android.youtube": "google-inc/youtube",
-  "com.google.android.apps.youtube.music": "google-inc/youtube-music",
-  "com.reddit.frontpage": "redditinc/reddit"
-};
+/**
+ * Get APKMirror path for a package from config.json, with hardcoded fallback.
+ */
+function getApkmirrorPath(packageId) {
+  const config = loadConfig();
+  const paths = config.apkmirror_paths || {
+    "com.google.android.youtube": "google-inc/youtube",
+    "com.google.android.apps.youtube.music": "google-inc/youtube-music",
+    "com.reddit.frontpage": "redditinc/reddit"
+  };
+  return paths[packageId] || null;
+}
 
 /**
  * Build APKMirror release page URL for a given version.
@@ -297,7 +303,7 @@ async function resolveApkeep(packageId, version) {
 async function resolveApkmirrorApi(packageId, version) {
   console.error(`[apkmirror-api-resolve] Resolving ${packageId} v${version}`);
 
-  const apkmirrorPath = APK_MIRROR_PATHS[packageId];
+  const apkmirrorPath = getApkmirrorPath(packageId);
   if (!apkmirrorPath) {
     throw new Error(`No APKMirror path for ${packageId}`);
   }
@@ -341,7 +347,7 @@ async function resolveApkmirrorApi(packageId, version) {
 async function resolveApkmirror(packageId, version) {
   console.error(`[apkmirror-resolve] Resolving ${packageId} v${version}`);
 
-  const apkmirrorPath = APK_MIRROR_PATHS[packageId];
+  const apkmirrorPath = getApkmirrorPath(packageId);
   if (!apkmirrorPath) {
     throw new Error(`No APKMirror path for ${packageId}`);
   }
@@ -507,28 +513,39 @@ function loadPatchesJson() {
 }
 
 /**
- * Check patches.json for existing URL matching the version
+ * Load config.json
+ */
+function loadConfig() {
+  const configPath = path.join(process.cwd(), 'config.json');
+  if (!fs.existsSync(configPath)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (e) {
+    console.error(`Warning: Failed to parse config.json: ${e.message}`);
+    return {};
+  }
+}
+
+/**
+ * Check config.json for existing URL matching the version
  */
 function loadExistingUrl(packageId, version) {
-  const patches = loadPatchesJson();
-  if (!patches) {
-    return null;
-  }
+  const config = loadConfig();
 
-  const downloadUrls = patches.__morphe?.download_urls?.[packageId];
+  const downloadUrls = config.download_urls?.[packageId];
   if (!downloadUrls) {
     return null;
   }
 
   // Check for exact version match first
   if (downloadUrls[version]) {
-    console.error(`Found existing URL for version ${version} in patches.json`);
+    console.error(`Found existing URL for version ${version} in config.json`);
     return downloadUrls[version];
   }
 
   // Also check if it's the latest_supported
   if (downloadUrls.latest_supported) {
-    console.error(`Using latest_supported URL from patches.json`);
+    console.error(`Using latest_supported URL from config.json`);
     return downloadUrls.latest_supported;
   }
 
@@ -911,7 +928,7 @@ function cleanupOldVersions(packageId) {
 async function downloadWithApkmirrorApi(packageId, version, outputDir) {
   console.error(`[apkmirror-api] Attempting download for ${packageId} v${version} via API`);
 
-  const apkmirrorPath = APK_MIRROR_PATHS[packageId];
+  const apkmirrorPath = getApkmirrorPath(packageId);
   if (!apkmirrorPath) {
     throw new Error(`No APKMirror path configured for ${packageId}`);
   }
@@ -992,7 +1009,7 @@ async function downloadWithApkmirrorApi(packageId, version, outputDir) {
 async function downloadWithApkmirror(packageId, version, outputDir) {
   console.error(`[apkmirror] Attempting download for ${packageId} v${version}`);
 
-  const apkmirrorPath = APK_MIRROR_PATHS[packageId];
+  const apkmirrorPath = getApkmirrorPath(packageId);
   if (!apkmirrorPath) {
     throw new Error(`No APKMirror path configured for ${packageId}`);
   }
@@ -1020,11 +1037,6 @@ async function downloadWithApkmirror(packageId, version, outputDir) {
     source: "apkmirror",
     url: downloadUrl
   };
-}
-
-function loadConfig() {
-  const configPath = path.join(__dirname, '../../config.json');
-  return JSON.parse(fs.readFileSync(configPath, 'utf8'));
 }
 
 /**
