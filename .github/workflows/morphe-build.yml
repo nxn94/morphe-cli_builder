@@ -701,8 +701,8 @@ jobs:
           rm -f "$APKS_DIR"/* || true
 
           # Manual source URL override (fallback).
-          # patches.json shape:
-          # "__morphe": {
+          # config.json shape:
+          # {
           #   "download_urls": {
           #     "com.google.android.youtube": {
           #       "latest_supported": "https://www.apkmirror.com/apk/.../android-apk-download/"
@@ -713,9 +713,9 @@ jobs:
             jq -r \
               --arg pkg "$APP_ID" \
               '
-                .["__morphe"]?.download_urls?[$pkg]?["latest_supported"]
+                .download_urls?[$pkg]?["latest_supported"]
                 // empty
-              ' patches.json 2>/dev/null || true
+              ' config.json 2>/dev/null || true
           )"
           
           find_package_candidate() {
