@@ -683,7 +683,7 @@ jobs:
                 else
                   reduce $version_lists[] as $current ($version_lists[0];
                     map(select($current | index(.)))
-                  )[]
+                  ) | .[]
                 end
               ' "$TOOLS_DIR/patches-list.json" || true
           )"
