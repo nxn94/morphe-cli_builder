@@ -28,7 +28,7 @@ cat morphe.jks.b64
 
 ## 3. Add GitHub Actions Secrets
 
-Repository -> `Settings` -> `Secrets and variables` -> `Actions`
+Repository → `Settings` → `Secrets and variables` → `Actions`
 
 Add:
 
@@ -39,119 +39,123 @@ Add:
 
 Signed builds are enforced. Missing required signing secrets will fail the run.
 
-## 4. Configure `patches.json`
+## 4. Configure `config.json`
 
-Edit `patches.json` to choose patches:
-
-- Set Morphe channels in the top metadata block:
-  - `"morphe_patches": "main"` or `"dev"`
-  - `"morphe_cli": "main"` or `"dev"`
-- Set preferred architecture (optional, defaults to `arm64-v8a`):
-  - `"preferred_arch": "arm64-v8a"`
-- Add APKMirror path mapping for each app (required for auto-resolution):
-  - `"apkmirror_paths": { "com.google.android.youtube": "google-inc/youtube", ... }`
-- `true` enables a patch
-- `false` disables a patch
-
-Workflow behavior:
-
-- Missing upstream patches are auto-added.
-- Existing true/false edits are preserved.
-- Build logs show enabled and disabled patch lists per app.
-- **Automatic URL resolution:** The workflow automatically finds the latest Morphe-supported version and resolves the APKMirror download URL.
-- Manual URLs in `download_urls` are used as fallback if auto-resolution fails.
-
-Example `patches.json` structure:
+Edit `config.json` to set build options:
 
 ```json
 {
-  "__morphe": {
-    "preferred_arch": "arm64-v8a",
-    "apkmirror_paths": {
-      "com.google.android.youtube": "google-inc/youtube",
-      "com.google.android.apps.youtube.music": "google-inc/youtube-music",
-      "com.reddit.frontpage": "redditinc/reddit"
-    },
-    "branches": {
-      "morphe_patches": "main",
-      "morphe_cli": "main"
-    },
-    "download_urls": {
-      "com.google.android.youtube": {
-        "latest_supported": "https://www.apkmirror.com/apk/google-inc/youtube/..."
-      }
-    }
+  "preferred_arch": "arm64-v8a",
+  "apkmirror_paths": {
+    "com.google.android.youtube": "google-inc/youtube",
+    "com.google.android.apps.youtube.music": "google-inc/youtube-music",
+    "com.reddit.frontpage": "redditinc/reddit"
   },
-  "com.google.android.youtube": {
-    "YouTube Vanced": true
-  },
-  "com.google.android.apps.youtube.music": {
-    "YouTube Music Vanced": true
-  },
-  "com.reddit.frontpage": {
-    "Reddit": true
+  "branches": {
+    "morphe_patches": "main",
+    "morphe_cli": "main"
   }
 }
 ```
 
-Download order (at build time):
-1. **Cache** - Check `~/.cache/auto-morphe-builder/apks/` for existing downloads (instant)
-2. **apkeep (APKPure)** - Primary source, downloads `.xapk` files reliably
-3. **patches.json URLs** - Manual URLs from `__morphe.download_urls.<appId>`
-4. **APKMirror API** - Falls back if above fail
-5. **APKMirror Playwright** - Last resort (often blocked by Cloudflare)
+| Field | Default | Description |
+|-------|---------|-------------|
+| `preferred_arch` | `arm64-v8a` | CPU architecture to prefer when selecting APK variant |
+| `apkmirror_paths` | see above | Maps package IDs to APKMirror app slugs — required for auto-resolution |
+| `branches.morphe_patches` | `main` | Morphe patches branch (`main` or `dev`) |
+| `branches.morphe_cli` | `main` | morphe-cli branch (`main` or `dev`) |
 
-The automatic resolver uses apkeep which reliably downloads from APKPure. APKPure provides `.xapk` files (split APKs) which are merged to standalone `.apk` using APKEditor before patching.
+The `download_urls` field is managed automatically by the workflow after each successful build. You don't need to set it manually.
 
-## 5. Run The Workflow
+## 5. Configure `patches.json`
 
-- Manual: `Actions` -> `Build Morphe-patched apps` -> `Run workflow`
-- Automatic: scheduled daily at `05:15 UTC`
+Edit `patches.json` to choose which patches to enable or disable:
 
-Build only runs when Morphe patch or CLI versions changed.
+```json
+{
+  "com.google.android.youtube": {
+    "Hide ads": true,
+    "SponsorBlock": true,
+    "Return YouTube Dislike": false
+  },
+  "com.google.android.apps.youtube.music": {
+    "Hide ads": true,
+    "Remove background playback restrictions": true
+  },
+  "com.reddit.frontpage": {
+    "Hide ads": true,
+    "Open links directly": true
+  }
+}
+```
 
-## 6. Download Outputs
+- `true` = enable patch, `false` = disable patch
+- The workflow auto-adds any new upstream patches (defaulting to `true`)
+- Your existing `true`/`false` values are never overwritten
+
+Build logs show which patches were enabled and disabled per app.
+
+## 6. Run The Workflow
+
+- **Manual:** `Actions` → `Build Morphe-patched apps` → `Run workflow`
+- **Automatic:** scheduled daily at `05:15 UTC`
+
+The build only runs when Morphe patch or CLI versions have changed since the last build.
+
+## 7. Download Outputs
 
 You get:
 
-- GitHub Actions artifacts (`<app>-<patches-version>-v<base-version>.apk`)
-- GitHub Release (dated `vYYYY.MM.DD` with all APKs)
+- GitHub Actions artifacts: `<app>-<patches-version>-v<base-version>.apk`
+- GitHub Release tagged `vYYYY.MM.DD` containing all APKs
 
-## 7. Add To Obtainium
+## 8. Add To Obtainium
 
-Create 3 separate Obtainium entries (same repo, different filter).
+Create 3 separate Obtainium entries (same repo URL, different filter per app).
 
 For each entry:
 
 1. Source: `GitHub`
 2. Repository URL: `https://github.com/<your-user>/<your-repo>`
-3. Use Filter (regex):
+3. Filter (regex):
    - YouTube: `^youtube.*\.apk$`
    - YouTube Music: `^ytmusic.*\.apk$`
    - Reddit: `^reddit.*\.apk$`
 
-## 8. Notes On APK Selection
+## Notes On APK Download
 
-- Architecture: Configurable via `preferred_arch` (default: `arm64-v8a`)
-- DPI preference: `nodpi` > single DPI values > DPI ranges
-- Workflow prefers configured architecture and rejects split config APKs without `classes.dex`.
-- For `.xapk/.apkm/.apks`, it attempts APKEditor merge to produce a normal APK before fallback extraction.
+The workflow downloads APKs using a multi-source fallback chain:
+
+1. **URL cache** — previously resolved direct download URLs (instant)
+2. **config.json URLs** — version-specific URLs saved by the `update-download-urls` job
+3. **apkeep (APKPure)** — tries first in parallel resolution
+4. **APKMirror scraper** — 3-page navigation using curl; automatically falls back to Playwright (Chromium) if Cloudflare blocks curl
+5. **APKMirror API** — tried in parallel alongside the scraper
+
+The APKMirror scraper navigates release page → variant page → download page within the same browser session, preserving session cookies needed for the final download.
+
+## Notes On APK Selection
+
+- Architecture is configured via `preferred_arch` in `config.json` (default: `arm64-v8a`)
+- DPI preference: `nodpi` → `120-640dpi` → `240-480dpi`
+- APK types: prefers `APK` over `BUNDLE` for same arch/DPI
+- For `.xapk`/`.apkm`/`.apks`, APKEditor merge produces a normal `.apk` before patching
 
 ## Common Failures
 
-### `Could not resolve APKMirror URL`
+### APK download fails / `No APK could be downloaded`
 
-The automatic URL resolution failed. Check:
-- APKMirror is accessible from GitHub Actions
-- The `apkmirror_paths` in `patches.json` are correct for each app
-- Fallback: Add manual URLs to `__morphe.download_urls`
+The download chain exhausted all sources. Check:
 
-### `Wrong version of key store`
-
-- Check `KEYSTORE_BASE64` is correct.
-- Check `KEYSTORE_PASSWORD`.
-- Set `KEY_PASSWORD` if different from keystore password.
+- The `apkmirror_paths` values in `config.json` are correct for each app
+- Run the workflow again (transient Cloudflare blocks are common)
 
 ### `Chosen APK has no classes.dex`
 
-Downloaded package is not a patchable base APK (split/config). Workflow now fails fast to avoid invalid outputs.
+The downloaded file is a split config APK, not the base APK. The scraper selects variants using the priority list but some releases only have BUNDLE variants. Check APKMirror manually to confirm an APK variant exists for the target version.
+
+### `Wrong version of key store`
+
+- Verify `KEYSTORE_BASE64` decodes to your actual keystore
+- Verify `KEYSTORE_PASSWORD` is correct
+- Set `KEY_PASSWORD` if the key password differs from the keystore password

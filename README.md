@@ -6,21 +6,20 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 
 ## Supported Apps
 
-- `youtube` -> `com.google.android.youtube`
-- `ytmusic` -> `com.google.android.apps.youtube.music`
-- `reddit` -> `com.reddit.frontpage`
+- `youtube` → `com.google.android.youtube`
+- `ytmusic` → `com.google.android.apps.youtube.music`
+- `reddit` → `com.reddit.frontpage`
 
 ## What The Workflow Does
 
 1. Checks latest Morphe patch/CLI release tags.
 2. Skips build if versions are unchanged.
-3. **Automatically resolves latest supported app versions** from morphe-cli and finds APKMirror download URLs.
-4. Falls back to manual URLs in `patches.json` if automatic resolution fails.
-5. Extracts/selects a patchable APK (prefers configured architecture, rejects dex-less split configs).
-6. Enforces signing (signed or fail).
-7. Runs `morphe-cli` and applies your patch config from `patches.json`.
-8. Publishes artifacts and creates a GitHub Release.
-9. Updates `state.json` and keeps `patches.json` synced with upstream patch list.
+3. **Automatically resolves latest supported app versions** from morphe-cli and downloads APKs from APKMirror.
+4. Extracts/selects a patchable APK (prefers configured architecture, rejects dex-less split configs).
+5. Enforces signing (signed or fail).
+6. Runs `morphe-cli` and applies your patch config from `patches.json`.
+7. Publishes artifacts and creates a GitHub Release.
+8. Updates `state.json` and keeps `patches.json` synced with upstream patch list.
 
 ## Release And Obtainium Model
 
@@ -51,12 +50,12 @@ Signed builds are enforced.
 | `KEY_ALIAS` | No | If empty, workflow picks first alias in keystore |
 | `KEY_PASSWORD` | No | Only needed when key password differs from keystore password |
 
-## Patch Configuration (`patches.json`)
+## Configuration Files
 
-### Configuration Options
+### `config.json` — build settings
 
 ```json
-"__morphe": {
+{
   "preferred_arch": "arm64-v8a",
   "apkmirror_paths": {
     "com.google.android.youtube": "google-inc/youtube",
@@ -66,62 +65,55 @@ Signed builds are enforced.
   "branches": {
     "morphe_patches": "main",
     "morphe_cli": "main"
+  },
+  "download_urls": {
+    "com.google.android.youtube": {
+      "20.44.38": "https://www.apkmirror.com/wp-content/themes/APKMirror/download.php?id=..."
+    }
   }
 }
 ```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `preferred_arch` | `arm64-v8a` | Preferred CPU architecture (e.g., `arm64-v8a`, `armeabi-v7a`) |
-| `apkmirror_paths` | required | Mapping of package IDs to APKMirror app paths |
+| `preferred_arch` | `arm64-v8a` | CPU architecture to prefer (`arm64-v8a`, `armeabi-v7a`, etc.) |
+| `apkmirror_paths` | see above | Maps package IDs to APKMirror app paths |
+| `branches.morphe_patches` | `main` | Morphe patches branch (`main` or `dev`) |
+| `branches.morphe_cli` | `main` | morphe-cli branch (`main` or `dev`) |
+| `download_urls` | — | Version-specific direct download URLs (auto-updated after each successful build) |
 
-- Allowed branch values: `main` and `dev`.
-- Manual APK URLs (fallback if auto-resolution fails):
-  ```json
-  "__morphe": {
-    "download_urls": {
-      "com.google.android.youtube": {
-        "20.40.45": "https://www.apkmirror.com/apk/.../android-apk-download/",
-        "latest_supported": "https://www.apkmirror.com/apk/.../android-apk-download/"
-      }
-    }
+### `patches.json` — patch toggles
+
+```json
+{
+  "com.google.android.youtube": {
+    "Hide ads": true,
+    "SponsorBlock": true,
+    "Return YouTube Dislike": false
   }
-  ```
-- Resolution order for manual URL:
-  1. `__morphe.download_urls.<appId>.<target_version>`
-  2. `__morphe.download_urls.<appId>.latest_supported`
-- `true` = enable patch
-- `false` = disable patch
-- Workflow syncs missing upstream patch keys at runtime/start and during state update.
-- Existing user values are preserved (your edited true/false values are not overwritten).
+}
+```
 
-During build logs, each app prints:
-
-- `Enabled patches for <package> (...)`
-- `Disabled patches for <package> (...)`
-
-Disabled patches are passed to Morphe via `-d "<patch name>"`.
+- `true` = enable patch, `false` = disable patch
+- Workflow syncs missing upstream patch keys at runtime; your edits are preserved
 
 ## Download Flow
 
-The workflow downloads APKs using a multi-source fallback chain:
+APKs are resolved using a multi-source fallback chain:
 
-1. **Cache** - Checks local cache (`~/.cache/auto-morphe-builder/apks/`) first for instant delivery
-2. **apkeep (APKPure)** - Primary download source, works reliably
-3. **patches.json URLs** - Uses manual URLs as fallback
-4. **APKMirror API** - Tries if above sources fail
-5. **APKMirror Playwright** - Last resort (often blocked by Cloudflare)
+1. **URL cache** — checks `~/.cache/auto-morphe-builder/urls/` for a previously resolved direct download URL
+2. **config.json URLs** — version-specific URLs stored by the `update-download-urls` job
+3. **Parallel resolution** — tries apkeep (APKPure), APKMirror API, and APKMirror scraper simultaneously; first valid URL wins
+4. **APKMirror scraper** — 3-page navigation (release → variant → download) using curl; falls back to Playwright (Chromium) if Cloudflare blocks curl
 
-APKPure provides `.xapk` files (split APK format). The workflow uses APKEditor to merge these into standalone `.apk` files before patching.
-
-The resolved URLs are stored in `patches.json` as they're used.
+The APKMirror scraper navigates all 3 pages within the same browser session so session cookies are preserved for the final download. Resolved URLs are cached for future runs.
 
 ## APK Selection Logic
 
-- Resolves Morphe-supported versions from patch compatibility and downloads only the latest supported version.
+- Resolves Morphe-supported versions and downloads only the latest supported.
 - Handles `.apk`, `.xapk`, `.apkm`.
-- For split packages (`.xapk/.apkm/.apks`), tries APKEditor merge first, then falls back to dex-bearing extraction if needed.
-- Prioritizes names containing `arm64-v8a`.
+- For split packages, tries APKEditor merge first, then falls back to dex-bearing APK extraction.
+- Prefers `nodpi` → `120-640dpi` → `240-480dpi` for DPI.
 - Rejects dex-less APKs (`classes*.dex` required).
 
 ## Signing Flow
@@ -142,18 +134,10 @@ The resolved URLs are stored in `patches.json` as they're used.
 
 Workflow updates:
 
-- `patches_branch`
-- `patches_version`
-- `cli_branch`
-- `cli_version`
-- `last_build`
-- `status`
-- `build_history` (most recent entries, includes run id, run number, commit, timestamp)
-
-## Performance Notes
-
-- Uses curl for URL resolution (lightweight, no browser overhead).
-- npm cache (`~/.npm`) is used for any remaining npm dependencies.
+- `patches_branch`, `patches_version`
+- `cli_branch`, `cli_version`
+- `last_build`, `status`
+- `build_history` (most recent entries: run id, run number, commit, timestamp)
 
 ## Artifacts And Releases
 
@@ -166,13 +150,13 @@ Full setup steps are in [`SETUP.md`](SETUP.md).
 
 ## Troubleshooting
 
-### Error: `No manual URL configured`
+### APK download fails
 
-The workflow requires manual download URLs. Add them to `patches.json` under `__morphe.download_urls`.
+The APKMirror scraper uses Playwright (Chromium) as a fallback when curl is blocked by Cloudflare. Playwright browsers are cached between runs. If the cache is stale, the workflow reinstalls them automatically.
 
 ### Error: `Chosen APK has no classes.dex`
 
-The selected file is not a patchable base APK (usually split/config artifact). The workflow now fails fast instead of patching invalid APKs.
+The selected file is not a patchable base APK (usually a split/config artifact). The workflow fails fast instead of patching invalid APKs.
 
 ### Error: `Wrong version of key store`
 
@@ -191,7 +175,6 @@ Use filename regex filtering as documented in the Release And Obtainium Model se
 - [Morphe patches](https://github.com/MorpheApp/morphe-patches) for patch definitions and compatibility metadata.
 - [morphe-cli](https://github.com/MorpheApp/morphe-cli) for patching and signing.
 - [APKEditor](https://github.com/REAndroid/APKEditor) for split package merge support.
-- [AntiSplit-M](https://github.com/AbdurazaaqMohammed/AntiSplit-M) for practical split-APK workflow inspiration.
 - [Bouncy Castle](https://www.bouncycastle.org/) for keystore/provider compatibility used in signing conversion.
 
 ## License
