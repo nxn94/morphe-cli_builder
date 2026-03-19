@@ -68,37 +68,69 @@ Repo is the top-level key; apps are nested underneath:
 
 ## Build Workflow Changes (`morphe-build.yml`)
 
+### Branch-to-tag resolution
+
+Both `check-versions` (morphe-build) and the `update-patches` workflow resolve a branch to a release tag using the same mechanism already present in the workflow: call the GitHub Releases API for `owner/repo`, filter releases by branch (using the `target_commitish` field), and select the most recent one. If no release is found for the configured branch, the job fails with an error. If the GitHub API is unavailable or rate-limited, the job also fails — there is no fallback to a stale version.
+
 ### `check-versions` job
 
-- Reads `patch_repos` from `config.json` to determine active apps and their repos
-- Deduplicates to get unique `repo+branch` pairs; resolves one release tag per unique pair
-- Outputs a JSON map `{ "owner/repo": "vX.Y.Z" }` and the list of active app IDs
-- Build triggers if any repo tag changed, CLI version changed, or manual dispatch
-- `state.json` `patches` field changes from flat `patches_version`/`patches_branch` to a map:
-  ```json
-  {
-    "patches": {
-      "MorpheApp/morphe-patches": { "branch": "dev", "version": "v1.20.0-dev.3" }
-    },
-    "cli_branch": "dev",
-    "cli_version": "v1.6.0-dev.5"
-  }
-  ```
+- Reads `patch_repos` from `config.json` to determine active apps and their repos; fails immediately with a clear error if `patch_repos` is absent or if the `cli` key is absent
+- Deduplicates to get unique `repo+branch` pairs; resolves one release tag per unique pair using branch-to-tag resolution above
+- Outputs a JSON map `{ "owner/repo": "vX.Y.Z" }` and the list of active app IDs as workflow outputs
+- Build triggers if any repo's resolved tag changed from `state.json`, CLI version changed, or manual dispatch
+- An existing `state.json` with the old flat `patches_version`/`patches_branch` keys is treated as "version unknown" — triggering a build on first run after migration
+- Tag resolution failure fails the job immediately (no partial output)
 
 ### `build` job (matrix)
 
 - Matrix is driven by the active app list output from `check-versions` (replaces the hardcoded app list)
 - Each matrix entry receives its assigned `repo` and `branch` as env vars
-- Downloads `patches-<repo-slug>.mpp` per unique repo; cache key is `repo + resolved_tag`
-- Two apps sharing the same repo reuse the cached `.mpp` (no duplicate downloads)
+- `.mpp` files are named using the full `owner-repo` slug with `/` replaced by `-` (e.g. `MorpheApp-morphe-patches.mpp`, `wchill-rvx-morphed.mpp`) — avoids collisions when two owners have repos with the same name
+- Each matrix entry independently downloads its assigned `.mpp` using `actions/cache` with key `morphe-patches-<owner-repo-slug>-<resolved_tag>`. No explicit coordination between parallel matrix entries is needed — whichever entry runs first warms the cache; subsequent entries sharing the same repo+tag get a cache hit. Cache miss falls back to downloading from GitHub Releases
 - `list-versions` is called with the app's specific `.mpp` file
-- `morphe-cli patch --patches=tools/<repo-slug>.mpp` — slug derived from the last path component of the repo (e.g. `morphe-patches`, `rvx-morphed`)
-- `patches-list.json` fetched per repo at its resolved tag
+- `morphe-cli patch --patches=tools/<owner-repo-slug>.mpp`
+- `patches-list.json` is fetched per repo at its resolved tag
+- If `patches.json` has no entry for an app's repo+package (e.g. `update-patches` has not been run yet), the build proceeds with all patches enabled for that app and emits a `::warning::` — it does not fail
 
 ### `update-state` job
 
-- Updates `state.json` with the new `patches` map structure
+- Writes the new `state.json` `patches` map structure (see below), fully replacing the old flat fields
 - Reads per-app patch toggles from `patches.json` using the repo-keyed structure
+
+### `state.json` new structure
+
+```json
+{
+  "patches": {
+    "MorpheApp/morphe-patches": { "branch": "dev", "version": "v1.20.0-dev.3" }
+  },
+  "cli_branch": "dev",
+  "cli_version": "v1.6.0-dev.5",
+  "last_build": "...",
+  "status": "success",
+  "build_history": [ ... ]
+}
+```
+
+The old flat `patches_branch` and `patches_version` top-level keys are removed after the first successful build post-migration.
+
+## `patches-list.json` Schema
+
+`patches-list.json` is fetched from `https://raw.githubusercontent.com/<owner>/<repo>/<tag>/patches-list.json`. The file has a `patches` array at the root (or the root itself is the array — both forms are handled). Each element is an object with:
+
+```json
+{
+  "name": "Hide ads",
+  "compatiblePackages": {
+    "com.google.android.youtube": ["20.44.38", "20.45.00"]
+  }
+}
+```
+
+- `name` — the patch name (used as the key in `patches.json`)
+- `compatiblePackages` (also accepted as `compatible_packages`) — object keyed by app package ID, value is an array of compatible version strings. A package ID present as a key means that patch applies to that app.
+
+This schema is the existing upstream format already consumed by `morphe-build.yml` — no changes to the format.
 
 ## New Workflow: `update-patches.yml`
 
@@ -107,18 +139,20 @@ Repo is the top-level key; apps are nested underneath:
 **Single job — `update-patches`:**
 
 1. Checkout repo
-2. Read `patch_repos` from `config.json`; deduplicate to unique `repo+branch` pairs
-3. Resolve latest release tag for each unique repo
-4. Fetch `patches-list.json` from each repo at its resolved tag
-5. Sync `patches.json`:
+2. Read `patch_repos` from `config.json`; fail immediately with a clear error if `patch_repos` is absent or empty. Also fail if the `cli` key is absent (required by `morphe-build`).
+3. Deduplicate to unique `repo+branch` pairs
+4. Resolve latest release tag for each unique repo using branch-to-tag resolution (ephemeral — tags are not written to `state.json` or any file)
+5. Fetch `patches-list.json` from each repo at its resolved tag — if any fetch fails, the entire workflow fails immediately with no changes committed
+6. Sync `patches.json`:
    - Add new patches (default `true`)
    - Remove patches no longer in upstream
    - Preserve existing `true`/`false` user values
    - Drop repos/apps absent from `config.json`'s `patch_repos`
-   - Apps in `patch_repos` with no patches in upstream get `{}`
-6. Commit and push: `chore: sync patches from upstream repos`
+   - Apps in `patch_repos` with no patches in their upstream `patches-list.json` get `{}`
+7. If `patches.json` is unchanged, skip commit and exit successfully
+8. Otherwise commit and push: `chore: sync patches from upstream repos`
 
-**Out of scope for this workflow:** APK downloads, builds, `state.json` updates, `config.json` updates.
+**Out of scope for this workflow:** APK downloads, builds, `state.json` updates, `config.json` updates. Resolved release tags are ephemeral and must not be persisted.
 
 **Intended usage:** Run `update-patches` → review/edit `patches.json` → run full build workflow.
 
@@ -128,9 +162,11 @@ No changes. Download logic reads `apkmirror_paths` and `download_urls` from `con
 
 ## Migration
 
-`config.json` requires a one-time manual migration:
+**`config.json`** — one-time manual edit:
 - Remove `branches` key
-- Add `patch_repos` with explicit repo+branch per app
-- Add `cli` key
+- Add `patch_repos` with explicit `{ repo, branch }` per app
+- Add `cli` key with `{ repo, branch }` for `MorpheApp/morphe-cli`
 
-`patches.json` is rewritten by the first run of `update-patches` into the new repo-keyed structure. Existing user `true`/`false` values are preserved during the migration merge.
+**`patches.json`** — rewritten by the first run of `update-patches`. The old flat structure (app at top level) is not structurally compatible with the new repo-keyed structure, so the first run discards the old file and writes a fresh repo-keyed file with all patches defaulting to `true`. The operator must re-configure any `false` toggles after migration. Subsequent runs preserve user-configured values normally.
+
+**`state.json`** — migrated automatically by the first successful build after the config change. The `check-versions` job treats a missing or flat `patches`/`patches_version` key as "version unknown", triggering a build. The `update-state` job writes the new structure, removing the old flat keys.
