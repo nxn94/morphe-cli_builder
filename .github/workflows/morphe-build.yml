@@ -1548,20 +1548,22 @@ jobs:
           set -euo pipefail
 
           DATE_TAG="v$(date -u +%Y.%m.%d)"
-          PATCHES_VERSION="${{ needs.check-versions.outputs.patches-version }}"
           CLI_VERSION="${{ needs.check-versions.outputs.cli-version }}"
-          PATCHES_BRANCH="${{ needs.check-versions.outputs.patches-branch }}"
           CLI_BRANCH="${{ needs.check-versions.outputs.cli-branch }}"
+          REPO_VERSIONS='${{ needs.check-versions.outputs.repo-versions }}'
 
-          RELEASE_TITLE="Morphe Patched Apps (${PATCHES_VERSION}, ${CLI_BRANCH}-${CLI_VERSION})"
+          PATCHES_SUMMARY="$(echo "$REPO_VERSIONS" | jq -r 'to_entries | map("- \(.key): \(.value)") | join("\n")')"
+
+          RELEASE_TITLE="Morphe Patched Apps (${CLI_BRANCH}-${CLI_VERSION})"
 
           RELEASE_NOTES="$(cat <<EOF
           Morphe-patched apps release.
 
-          **Patches channel:** ${PATCHES_BRANCH}
-          **Patches version:** ${PATCHES_VERSION}
           **CLI channel:** ${CLI_BRANCH}
           **CLI version:** ${CLI_VERSION}
+
+          **Patch repo versions:**
+${PATCHES_SUMMARY}
 
           ## Available APKs
           $(ls -1 apks/*.apk | xargs -I {} basename {})
@@ -1630,11 +1632,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          PATCHES_TAG="${{ needs.check-versions.outputs.patches-version }}"
-          PATCHES_LIST_FILE="$RUNNER_TEMP/patches-list.json"
-          DEFAULTS_FILE="$RUNNER_TEMP/default_patches.json"
-          EXISTING_FILE="$RUNNER_TEMP/existing_patches.json"
-          PKGS='["com.google.android.youtube","com.google.android.apps.youtube.music","com.reddit.frontpage"]'
+          PKGS="$(jq -c '.patch_repos | keys' config.json)"
+          REPO_VERSIONS='${{ needs.check-versions.outputs.repo-versions }}'
           BEFORE_STATE_HASH="$(
             if [ -f state.json ]; then sha256sum state.json | awk '{print $1}'; else echo "missing"; fi
           )"
@@ -1642,12 +1641,8 @@ jobs:
             if [ -f patches.json ]; then sha256sum patches.json | awk '{print $1}'; else echo "missing"; fi
           )"
 
-          # Keep repository patches.json in sync with latest upstream patches metadata
-          # while preserving any user-edited true/false values.
-          curl -fsSL "https://raw.githubusercontent.com/MorpheApp/morphe-patches/${PATCHES_TAG}/patches-list.json" \
-            -o "$PATCHES_LIST_FILE"
-          jq --argjson pkgs "$PKGS" '. as $src
-            |
+          # Sync patches.json to repo-keyed structure (same logic as update-patches.yml)
+          COMPAT_FN='
             def compat_pkg_names($patch):
               if ($patch.compatiblePackages? | type) == "object" then
                 ($patch.compatiblePackages | keys)
@@ -1660,38 +1655,106 @@ jobs:
               else
                 []
               end;
+          '
 
-            reduce $pkgs[] as $pkg ({};
-              .[$pkg] = (
-                reduce (
-                  (($src.patches // $src)[])
-                  | select((compat_pkg_names(.) | index($pkg)) != null)
-                  | .name
-                ) as $name
-                ({};
-                  .[$name] = true
-                )
-              )
-            )
-          ' "$PATCHES_LIST_FILE" > "$DEFAULTS_FILE"
+          REPO_PAIRS="$(jq -r '
+            .patch_repos
+            | to_entries
+            | map(.value | "\(.repo)|\(.branch | ascii_downcase)")
+            | unique[]
+          ' config.json)"
 
-          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
-            cp patches.json "$EXISTING_FILE"
+          # Guard: nothing to sync if no repos configured
+          if [ -z "$REPO_PAIRS" ]; then
+            echo "::warning::No repos in patch_repos; skipping patches.json sync."
           else
-            echo '{}' > "$EXISTING_FILE"
+
+          # Fetch patches-list.json for each unique repo
+          mkdir -p "$RUNNER_TEMP/patches-lists"
+          while IFS='|' read -r repo branch; do
+            slug="${repo//\//-}"
+            tag="$(echo "$REPO_VERSIONS" | jq -r --arg r "$repo" '.[$r] // empty')"
+            if [ -z "$tag" ]; then
+              echo "::warning::No resolved tag for ${repo}; skipping patches sync for this repo."
+              continue
+            fi
+            url="https://raw.githubusercontent.com/${repo}/${tag}/patches-list.json"
+            curl -fsSL "$url" -o "$RUNNER_TEMP/patches-lists/${slug}.json" || \
+              echo "::warning::Failed to fetch patches-list.json for ${repo}; skipping."
+          done <<< "$REPO_PAIRS"
+
+          # Determine if existing patches.json is repo-keyed
+          EXISTING_IS_REPO_KEYED=false
+          if [ -s patches.json ] && jq -e 'type=="object"' patches.json >/dev/null 2>&1; then
+            if jq -e 'keys | map(select(contains("/"))) | length > 0' patches.json >/dev/null 2>&1; then
+              EXISTING_IS_REPO_KEYED=true
+            fi
           fi
 
-          jq -n --slurpfile defaults "$DEFAULTS_FILE" --slurpfile existing "$EXISTING_FILE" '
-            ($defaults[0] // {}) as $d
-            | ($existing[0] // {}) as $e
-            | ($e | if type == "object" then . else {} end | del(.__morphe)) as $base
-            | reduce ($d | keys[]) as $pkg ($base;
-                .[$pkg] = (
-                  ($d[$pkg] // {})
-                  * ((.[$pkg] // {}) | if type == "object" then . else {} end)
+          if [ "$EXISTING_IS_REPO_KEYED" = "true" ]; then
+            cp patches.json "$RUNNER_TEMP/patches_base.json"
+          else
+            echo '{}' > "$RUNNER_TEMP/patches_base.json"
+          fi
+
+          while IFS='|' read -r repo branch; do
+            slug="${repo//\//-}"
+            PATCHES_LIST="$RUNNER_TEMP/patches-lists/${slug}.json"
+            [ -f "$PATCHES_LIST" ] || continue
+
+            APPS_FOR_REPO="$(jq -c --arg r "$repo" '
+              [.patch_repos | to_entries[]
+                | select(.value.repo == $r)
+                | .key]
+            ' config.json)"
+
+            jq --argjson apps "$APPS_FOR_REPO" "$COMPAT_FN"'
+              . as $src
+              | reduce $apps[] as $pkg ({};
+                  .[$pkg] = (
+                    reduce (
+                      (($src.patches // $src)[])
+                      | select((compat_pkg_names(.) | index($pkg)) != null)
+                      | .name
+                    ) as $name
+                    ({};
+                      .[$name] = true
+                    )
+                  )
                 )
-              )
-          ' > patches.json.tmp && mv patches.json.tmp patches.json
+            ' "$PATCHES_LIST" > "$RUNNER_TEMP/defaults_${slug}.json"
+
+            # Same merge logic as update-patches.yml: only upstream keys survive.
+            jq -n \
+              --arg repo "$repo" \
+              --slurpfile defaults "$RUNNER_TEMP/defaults_${slug}.json" \
+              --slurpfile base "$RUNNER_TEMP/patches_base.json" '
+              ($defaults[0] // {}) as $d
+              | ($base[0] // {}) as $existing
+              | ($existing[$repo] // {}) as $repo_existing
+              | reduce ($d | keys[]) as $pkg ({};
+                  .[$pkg] = (
+                    reduce ($d[$pkg] | keys[]) as $pname ({};
+                      .[$pname] = (($repo_existing[$pkg] // {})[$pname] // true)
+                    )
+                  )
+                )
+            ' > "$RUNNER_TEMP/merged_${slug}.json"
+
+            jq --arg repo "$repo" \
+               --slurpfile merged "$RUNNER_TEMP/merged_${slug}.json" \
+               '.[$repo] = $merged[0]' \
+               "$RUNNER_TEMP/patches_base.json" > "$RUNNER_TEMP/patches_next.json"
+            mv "$RUNNER_TEMP/patches_next.json" "$RUNNER_TEMP/patches_base.json"
+          done <<< "$REPO_PAIRS"
+
+          ACTIVE_REPOS="$(jq -c '[.patch_repos | to_entries[] | .value.repo] | unique' config.json)"
+          jq --argjson active "$ACTIVE_REPOS" \
+            'with_entries(select(.key as $k | $active | index($k) != null))' \
+            "$RUNNER_TEMP/patches_base.json" > patches.json.tmp
+          mv patches.json.tmp patches.json
+
+          fi # end REPO_PAIRS guard
 
           # Ensure state file is valid JSON before merge/update.
           if [ ! -s state.json ] || ! jq -e 'type=="object"' state.json >/dev/null 2>&1; then
@@ -1699,23 +1762,32 @@ jobs:
             echo '{}' > state.json
           fi
 
-          # Update state and append build history.
-          jq --arg patches "${{ needs.check-versions.outputs.patches-version }}" \
+          # Build patches map for state.json: { "owner/repo": { branch, version } }
+          # Use first() to avoid duplicate outputs when multiple apps share one repo.
+          PATCHES_MAP="$(echo "$REPO_VERSIONS" | jq -c \
+            --argjson config "$(jq -c '.' config.json)" \
+            'to_entries | map({
+              key: .key,
+              value: {
+                branch: (first($config.patch_repos | to_entries[] | select(.value.repo == .key) | .value.branch) // "main" | ascii_downcase),
+                version: .value
+              }
+            }) | from_entries' 2>/dev/null || echo '{}')"
+
+          jq --argjson patches_map "$PATCHES_MAP" \
              --arg cli "${{ needs.check-versions.outputs.cli-version }}" \
-             --arg patches_branch "${{ needs.check-versions.outputs.patches-branch }}" \
              --arg cli_branch "${{ needs.check-versions.outputs.cli-branch }}" \
              --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
              --arg run_id "${{ github.run_id }}" \
-             --arg sha "${{ github.sha }}" \
              --argjson run_number "${{ github.run_number }}" \
+             --arg sha "${{ github.sha }}" \
              '. as $s
              | (
                  ((.build_history // [])
                   + [{
                       "timestamp": $timestamp,
-                      "patches_version": $patches,
+                      "patches": $patches_map,
                       "cli_version": $cli,
-                      "patches_branch": $patches_branch,
                       "cli_branch": $cli_branch,
                       "status": "success",
                       "run_id": $run_id,
@@ -1725,12 +1797,12 @@ jobs:
                  | if length > 100 then .[-100:] else . end
                ) as $history
              | {
-                 "patches_branch": $patches_branch,
-                 "patches_version": $patches,
+                 "patches": $patches_map,
                  "cli_branch": $cli_branch,
                  "cli_version": $cli
                }
              + ($s | del(
+                 .patches,
                  .patches_branch,
                  .patches_version,
                  .cli_branch,
@@ -1764,7 +1836,7 @@ jobs:
             exit 1
           fi
 
-          git commit -m "chore: update state and patches config - patches ${{ needs.check-versions.outputs.patches-branch }}/${{ needs.check-versions.outputs.patches-version }}, cli ${{ needs.check-versions.outputs.cli-branch }}/${{ needs.check-versions.outputs.cli-version }}"
+          git commit -m "chore: update state and patches config - cli ${{ needs.check-versions.outputs.cli-branch }}/${{ needs.check-versions.outputs.cli-version }}"
 
           BRANCH_NAME="${GITHUB_REF_NAME:-main}"
           for attempt in 1 2 3; do
