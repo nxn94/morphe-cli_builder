@@ -838,8 +838,8 @@ jobs:
             local output_file="$APKS_DIR/$apk_name"
             local meta_file="$APKS_DIR/meta.json"
             
-            # Run Playwright downloader
-            node .github/scripts/apkmirror-playwright.js "$url" "" "$meta_file" "$output_file"
+            # Use unified downloader instead
+            node .github/scripts/unified-downloader.js "$APP_ID" "$VERSION" "$APKS_DIR"
           }
 
           download_with_curl() {
@@ -1537,16 +1537,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Commit updated patches.json
+      - name: Commit updated config.json
         run: |
+          # Note: this job runs on a fresh checkout; config.json changes from
+          # other runners are not automatically present here. The git status check
+          # will typically find nothing to commit. This is a known pre-existing
+          # limitation — URL commits happen via update-state job's git add instead.
           if [ -n "$(git status --porcelain)" ]; then
             git config --local user.email "github-actions[bot]@users.noreply.github.com"
             git config --local user.name "github-actions[bot]"
-            git add patches.json
+            git add config.json
             git commit -m "chore: update download URLs after successful build" || true
             git push || true
           else
-            echo "No changes to patches.json"
+            echo "No changes to config.json on this runner"
           fi
 
   update-state:
