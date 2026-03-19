@@ -39,11 +39,11 @@ jobs:
           fi
 
           if [ "$PATCHES_BRANCH" != "main" ] && [ "$PATCHES_BRANCH" != "dev" ]; then
-            echo "::warning::Invalid morphe_patches branch '$PATCHES_BRANCH' in patches.json. Falling back to 'main'."
+            echo "::warning::Invalid morphe_patches branch '$PATCHES_BRANCH' in config.json. Falling back to 'main'."
             PATCHES_BRANCH="main"
           fi
           if [ "$CLI_BRANCH" != "main" ] && [ "$CLI_BRANCH" != "dev" ]; then
-            echo "::warning::Invalid morphe_cli branch '$CLI_BRANCH' in patches.json. Falling back to 'main'."
+            echo "::warning::Invalid morphe_cli branch '$CLI_BRANCH' in config.json. Falling back to 'main'."
             CLI_BRANCH="main"
           fi
 
