@@ -43,8 +43,22 @@ describe('buildVariantPriorities', () => {
     expect(priorities[4]).toEqual({ arch: 'noarch', dpi: 'nodpi', type: 'APK' });
   });
 
-  test('returns 5 priorities total', () => {
-    expect(buildVariantPriorities('arm64-v8a')).toHaveLength(5);
+  test('returns 15 priorities total (5 arch/type combos × 3 DPIs)', () => {
+    expect(buildVariantPriorities('arm64-v8a')).toHaveLength(15);
+  });
+
+  test('nodpi entries come before 120-640dpi entries', () => {
+    const priorities = buildVariantPriorities('arm64-v8a');
+    const firstNodpi = priorities.findIndex(p => p.dpi === 'nodpi');
+    const first120 = priorities.findIndex(p => p.dpi === '120-640dpi');
+    expect(firstNodpi).toBeLessThan(first120);
+  });
+
+  test('120-640dpi entries come before 240-480dpi entries', () => {
+    const priorities = buildVariantPriorities('arm64-v8a');
+    const first120 = priorities.findIndex(p => p.dpi === '120-640dpi');
+    const first240 = priorities.findIndex(p => p.dpi === '240-480dpi');
+    expect(first120).toBeLessThan(first240);
   });
 });
 
@@ -85,6 +99,24 @@ describe('selectVariant', () => {
     const $ = cheerio.load(html);
     const priorities = buildVariantPriorities('arm64-v8a');
     expect(selectVariant($, priorities)).toBe('/apk/universal');
+  });
+
+  test('falls back to 120-640dpi when nodpi not found', () => {
+    const html = makeHtml([
+      { version: '20.44.38', dpi: '120-640dpi', arch: 'arm64-v8a', type: 'APK', href: '/apk/120dpi' },
+    ]);
+    const $ = cheerio.load(html);
+    const priorities = buildVariantPriorities('arm64-v8a');
+    expect(selectVariant($, priorities)).toBe('/apk/120dpi');
+  });
+
+  test('falls back to 240-480dpi when nodpi and 120-640dpi not found', () => {
+    const html = makeHtml([
+      { version: '20.44.38', dpi: '240-480dpi', arch: 'arm64-v8a', type: 'APK', href: '/apk/240dpi' },
+    ]);
+    const $ = cheerio.load(html);
+    const priorities = buildVariantPriorities('arm64-v8a');
+    expect(selectVariant($, priorities)).toBe('/apk/240dpi');
   });
 
   test('throws with list of available variants when nothing matches', () => {

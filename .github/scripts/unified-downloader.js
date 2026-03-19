@@ -59,13 +59,16 @@ function buildReleasePageUrl(apkmirrorPath, version) {
  * Priority: preferred APK → preferred BUNDLE → universal APK → universal BUNDLE → noarch APK
  */
 function buildVariantPriorities(preferredArch) {
-  return [
-    { arch: preferredArch, dpi: 'nodpi', type: 'APK' },
-    { arch: preferredArch, dpi: 'nodpi', type: 'BUNDLE' },
-    { arch: 'universal',   dpi: 'nodpi', type: 'APK' },
-    { arch: 'universal',   dpi: 'nodpi', type: 'BUNDLE' },
-    { arch: 'noarch',      dpi: 'nodpi', type: 'APK' },
-  ];
+  const archs = [preferredArch, 'universal', 'noarch'];
+  const dpis  = ['nodpi', '120-640dpi', '240-480dpi'];
+  const priorities = [];
+  for (const dpi of dpis) {
+    for (const arch of archs) {
+      priorities.push({ arch, dpi, type: 'APK' });
+      if (arch !== 'noarch') priorities.push({ arch, dpi, type: 'BUNDLE' });
+    }
+  }
+  return priorities;
 }
 
 /**
