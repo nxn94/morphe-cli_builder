@@ -76,14 +76,17 @@ function buildVariantPriorities(preferredArch) {
 function selectVariant($, priorities) {
   const rows = [];
   $('.table-row').each((_, row) => {
-    const cells = $(row).find('.table-cell').map((_, c) => $(c).text().trim()).get();
+    const cells = $(row).find('.table-cell');
     if (cells.length < 4) return;
-    const href = $(row).find('a[href*="/apk/"]').attr('href');
-    if (!href) return;
+    // Real APKMirror DOM: cells[0]=variant name+type+link, cells[1]=arch, cells[2]=minver, cells[3]=dpi
+    const href = $(cells[0]).find('a.accent_color[href], a[href*="/apk/"]').attr('href');
+    if (!href || href.includes('#')) return;  // Skip anchor-only sidebar links
+    const variantText = $(cells[0]).text().toUpperCase();
+    const type = variantText.includes('BUNDLE') ? 'BUNDLE' : 'APK';
     rows.push({
-      dpi:  cells[1]?.toLowerCase() ?? '',
-      arch: cells[2]?.toLowerCase() ?? '',
-      type: cells[3]?.toUpperCase() ?? '',
+      dpi:  $(cells[3]).text().trim().toLowerCase(),
+      arch: $(cells[1]).text().trim().toLowerCase(),
+      type,
       href,
     });
   });
@@ -120,32 +123,39 @@ function collectCookies(response, existing = {}) {
 }
 
 /**
- * Make a fetch request with browser-like headers and cookie forwarding.
- * Throws on non-OK responses or timeout.
+ * Make a request with browser-like headers using curl subprocess.
+ * Node's built-in fetch has a different TLS fingerprint that Cloudflare detects.
+ * curl's TLS fingerprint matches real browsers and passes Cloudflare bot detection.
  */
 async function apkmirrorFetch(url, cookies = {}, referer = null) {
-  const headers = {
-    'User-Agent':      'Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0',
-    'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'DNT':             '1',
-  };
-  if (referer) headers['Referer'] = referer;
+  const { execFileSync } = require('child_process');
+  const args = [
+    '-s', '-L', '--max-time', '30',
+    '-A', 'Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0',
+    '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    '-H', 'Accept-Language: en-US,en;q=0.9',
+    '-H', 'DNT: 1',
+    '-w', '\n%{http_code}',
+  ];
+  if (referer) args.push('-H', `Referer: ${referer}`);
   if (Object.keys(cookies).length > 0) {
-    headers['Cookie'] = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+    args.push('-H', `Cookie: ${Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ')}`);
   }
+  args.push(url);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  try {
-    const response = await fetch(url, { headers, redirect: 'follow', signal: controller.signal });
-    clearTimeout(timeout);
-    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-    return response;
-  } catch (e) {
-    clearTimeout(timeout);
-    throw e;
-  }
+  const output = execFileSync('curl', args, { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' });
+  const lastNewline = output.lastIndexOf('\n');
+  const statusCode = parseInt(output.slice(lastNewline + 1).trim(), 10);
+  const body = output.slice(0, lastNewline);
+
+  if (statusCode >= 400) throw new Error(`HTTP ${statusCode} for ${url}`);
+
+  return {
+    text: async () => body,
+    headers: { getSetCookie: () => [] },
+    ok: statusCode < 400,
+    status: statusCode,
+  };
 }
 
 /**

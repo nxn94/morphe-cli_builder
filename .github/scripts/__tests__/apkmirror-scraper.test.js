@@ -49,15 +49,20 @@ describe('buildVariantPriorities', () => {
 });
 
 describe('selectVariant', () => {
+  // Matches real APKMirror DOM:
+  // cells[0] = variant name + type text + a.accent_color link
+  // cells[1] = architecture
+  // cells[2] = min android version (ignored)
+  // cells[3] = screen DPI
   const makeHtml = (rows) => `
     <div class="variants-table">
       ${rows.map(r => `
         <div class="table-row">
-          <div class="table-cell">${r.version}</div>
-          <div class="table-cell">${r.dpi}</div>
+          <div class="table-cell"><a class="accent_color" href="${r.href}">${r.version} ${r.type}</a></div>
           <div class="table-cell">${r.arch}</div>
-          <div class="table-cell">${r.type}</div>
-          <div class="table-cell"><a href="${r.href}">Download</a></div>
+          <div class="table-cell">Android 9.0+</div>
+          <div class="table-cell">${r.dpi}</div>
+          <div class="table-cell"></div>
         </div>
       `).join('')}
     </div>
