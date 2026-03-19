@@ -14,11 +14,11 @@
     "Custom player overlay opacity": true,
     "Disable DRC audio": true,
     "Disable QUIC protocol": true,
+    "Disable Shorts resuming on startup": true,
     "Disable double tap actions": true,
     "Disable haptic feedback": true,
     "Disable layout updates": true,
     "Disable player popup panels": true,
-    "Disable resuming Shorts on startup": true,
     "Disable rolling number animations": true,
     "Disable sign in to TV popup": true,
     "Disable video codecs": true,
@@ -62,7 +62,8 @@
     "Swipe controls": true,
     "Theme": true,
     "Video ads": true,
-    "Video quality": true
+    "Video quality": true,
+    "Disable resuming Shorts on startup": true
   },
   "com.google.android.apps.youtube.music": {
     "Bypass certificate checks": true,
@@ -82,6 +83,7 @@
     "Hide buttons": true,
     "Hide category bar": true,
     "Hide music video ads": true,
+    "Miniplayer previous and next buttons": true,
     "Navigation bar": true,
     "Permanent repeat": true,
     "Remove background playback restrictions": true,
@@ -91,6 +93,7 @@
   },
   "com.reddit.frontpage": {
     "Custom branding name for Reddit": true,
+    "Disable modern home": true,
     "Disable screenshot popup": true,
     "Hide Trending Today shelf": true,
     "Hide ads": true,
@@ -100,7 +103,8 @@
     "Open links directly": true,
     "Remove subreddit dialog": true,
     "Sanitize sharing links": true,
-    "Settings for Reddit": true,
-    "Spoof signature": true
+    "Show view count": true,
+    "Spoof signature": true,
+    "Settings for Reddit": true
   }
 }
