@@ -557,16 +557,21 @@ jobs:
             npx playwright install chromium
           fi
 
-      - name: Cache morphe-cli and patches
+      - name: Cache patches .mpp
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ env.TOOLS_DIR }}/morphe-cli.jar
-            ${{ env.TOOLS_DIR }}/${{ matrix.patchSlug }}.mpp
-          key: morphe-patches-${{ matrix.patchSlug }}-${{ matrix.patchTag }}-cli-${{ needs.check-versions.outputs.cli-version }}
+          path: ${{ env.TOOLS_DIR }}/${{ matrix.patchSlug }}.mpp
+          key: morphe-patches-${{ matrix.patchSlug }}-${{ matrix.patchTag }}
           restore-keys: |
-            morphe-patches-${{ matrix.patchSlug }}-${{ matrix.patchTag }}-
             morphe-patches-${{ matrix.patchSlug }}-
+
+      - name: Cache morphe-cli
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TOOLS_DIR }}/morphe-cli.jar
+          key: morphe-cli-${{ needs.check-versions.outputs.cli-version }}
+          restore-keys: |
+            morphe-cli-
 
       - name: Get latest Morphe patches + CLI + APKEditor
         id: morphe
