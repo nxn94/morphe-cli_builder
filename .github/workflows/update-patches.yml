@@ -20,8 +20,8 @@ jobs:
           set -euo pipefail
 
           # Validate required config keys
-          if ! jq -e '.patch_repos | type == "object"' config.json >/dev/null 2>&1; then
-            echo "::error::config.json is missing 'patch_repos'. Run the config migration first."
+          if ! jq -e '.patch_repos | type == "object" and length > 0' config.json >/dev/null 2>&1; then
+            echo "::error::config.json is missing or empty 'patch_repos'. Add per-app repo assignments."
             exit 1
           fi
           if ! jq -e '.cli | has("repo") and has("branch")' config.json >/dev/null 2>&1; then
