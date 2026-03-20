@@ -276,8 +276,12 @@
     },
     {
       "timestamp": "2026-03-19T19:47:38Z",
-      "patches_version": "v1.20.0-dev.3",
-      "patches_branch": "main",
+      "patches": {
+        "MorpheApp/morphe-patches": {
+          "branch": "main",
+          "version": "v1.20.0-dev.3"
+        }
+      },
       "cli_version": "v1.6.0-dev.5",
       "cli_branch": "dev",
       "status": "success",
@@ -287,8 +291,12 @@
     },
     {
       "timestamp": "2026-03-19T20:10:36Z",
-      "patches_version": "v1.20.0-dev.3",
-      "patches_branch": "main",
+      "patches": {
+        "MorpheApp/morphe-patches": {
+          "branch": "main",
+          "version": "v1.20.0-dev.3"
+        }
+      },
       "cli_version": "v1.6.0-dev.5",
       "cli_branch": "dev",
       "status": "success",
@@ -298,8 +306,12 @@
     },
     {
       "timestamp": "2026-03-19T20:28:20Z",
-      "patches_version": "v1.20.0-dev.3",
-      "patches_branch": "main",
+      "patches": {
+        "MorpheApp/morphe-patches": {
+          "branch": "main",
+          "version": "v1.20.0-dev.3"
+        }
+      },
       "cli_version": "v1.6.0-dev.5",
       "cli_branch": "dev",
       "status": "success",
