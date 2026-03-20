@@ -773,16 +773,8 @@ jobs:
             DOWNLOAD_SUCCESS=true
           else
             rm -f "$APKS_DIR"/* || true
+          fi
 
-          # Manual source URL override (fallback).
-          # config.json shape:
-          # {
-          #   "download_urls": {
-          #     "com.google.android.youtube": {
-          #       "latest_supported": "https://www.apkmirror.com/apk/.../android-apk-download/"
-          #     }
-          #   }
-          # }
           MANUAL_URL="$(
             jq -r \
               --arg pkg "$APP_ID" \
@@ -791,7 +783,7 @@ jobs:
                 // empty
               ' config.json 2>/dev/null || true
           )"
-          
+
           find_package_candidate() {
             find "$APKS_DIR" -type f \
               \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) \
@@ -844,7 +836,6 @@ jobs:
             local rc=$?
             set -e
             if [ "$rc" -eq 0 ] && [ ! -f "$out_apk" ]; then
-              # Some APKEditor versions ignore -o and emit *_merged.apk next to input.
               local default_merged="${split_pkg%.*}_merged.apk"
               local fallback_merged
               fallback_merged="$(find "$(dirname "$split_pkg")" -maxdepth 1 -type f -name "*_merged.apk" -printf '%p\n' | head -n1 || true)"
@@ -891,25 +882,23 @@ jobs:
 
           download_with_playwright() {
             local url="$1"
-            
+
             if [ -z "$url" ]; then
               echo "::error::Playwright download URL is empty."
               return 1
             fi
-            
+
             echo "::notice::Downloading APK using Playwright..."
-            
-            # Determine output filename from URL
+
             local apk_name="${url##*/}"
             apk_name="${apk_name%/}"
             [ -z "$apk_name" ] && apk_name="${APP_ID}.apk"
-            
+
             case "${apk_name,,}" in
               *.apk|*.xapk|*.apkm|*.apks) ;;
               *) apk_name="${apk_name}.apk" ;;
             esac
-            
-            # Delegate to curl downloader with the pre-resolved URL
+
             download_with_curl "$url"
           }
 
@@ -924,14 +913,11 @@ jobs:
             fi
 
             echo "::notice::Using APK source URL for ${APP_ID}: $url"
-            
-            # Determine output filename from URL
+
             local apk_name="${url##*/}"
-            # Remove trailing slash and clean up
             apk_name="${apk_name%/}"
             [ -z "$apk_name" ] && apk_name="${APP_ID}.apk"
-            
-            # Ensure .apk extension
+
             case "${apk_name,,}" in
               *.apk|*.xapk|*.apkm|*.apks) ;;
               *) apk_name="${apk_name}.apk" ;;
@@ -939,10 +925,9 @@ jobs:
 
             local output_file="$APKS_DIR/$apk_name"
 
-            # Download with curl, following redirects
             while [ "$attempt" -le "$max_attempts" ]; do
               echo "::notice::Download attempt ${attempt}/${max_attempts}..."
-              
+
               if curl -fL --retry 4 --retry-delay 5 --connect-timeout 30 \
                 -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36" \
                 -H "Accept: */*" \
@@ -950,97 +935,90 @@ jobs:
                 -H "Referer: https://www.apkmirror.com/" \
                 -o "$output_file" \
                 "$url"; then
-                
-                # Check if we got a valid file (not an error page)
+
                 if [ -s "$output_file" ] && [ "$(stat -c%s "$output_file" 2>/dev/null || echo 0)" -gt 1000 ]; then
                   echo "::notice::Download saved: $output_file"
                   return 0
                 fi
               fi
-              
+
               if [ "$attempt" -ge "$max_attempts" ]; then
                 echo "::warning::Download failed after ${max_attempts} attempts."
                 rm -f "$output_file"
                 return 1
               fi
-              
+
               echo "::warning::Download attempt ${attempt} failed, retrying..."
               sleep $((attempt * 10))
               rm -f "$output_file"
               attempt=$((attempt + 1))
             done
-            
+
             return 1
           }
 
-          APK_CANDIDATE=""
-          if [ -z "$TARGET_VERSION" ]; then
-            echo "::error::No latest Morphe-supported version was resolved for ${{ matrix.appId }}."
-            exit 1
-          fi
+          if [ -z "$CACHED_APK" ]; then
+            APK_CANDIDATE=""
+            if [ -z "$TARGET_VERSION" ]; then
+              echo "::error::No latest Morphe-supported version was resolved for ${{ matrix.appId }}."
+              exit 1
+            fi
 
-          DOWNLOAD_SUCCESS=false
+            DOWNLOAD_SUCCESS=false
 
-          # Install aapt BEFORE downloading - needed for version validation in unified-downloader
-          if ! command -v aapt &> /dev/null; then
-            echo "::notice::Installing aapt for version validation..."
-            mkdir -p /tmp/android-sdk
-            curl -sSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
-            unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
-            mkdir -p /tmp/android-sdk/cmdline-tools/latest
-            mv /tmp/android-sdk/cmdline-tools/* /tmp/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
-            export ANDROID_HOME=/tmp/android-sdk
-            export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin"
-          fi
+            if ! command -v aapt &> /dev/null; then
+              echo "::notice::Installing aapt for version validation..."
+              mkdir -p /tmp/android-sdk
+              curl -sSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
+              unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
+              mkdir -p /tmp/android-sdk/cmdline-tools/latest
+              mv /tmp/android-sdk/cmdline-tools/* /tmp/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
+              export ANDROID_HOME=/tmp/android-sdk
+              export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin"
+            fi
 
-          # First, check if we have a pre-downloaded APK from check-versions job that matches target version
-          PRELOADED_APK=""
-          for ext in apk xapk apkm apks; do
-            # Find APKs and check if version in filename matches target version
-            while IFS= read -r apk; do
-              [ -z "$apk" ] && continue
-              # Extract version from filename (e.g., youtube-20.44.38.apk -> 20.44.38)
-              apk_name=$(basename "$apk")
-              apk_version=$(echo "$apk_name" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
-              if [ "$apk_version" = "$TARGET_VERSION" ]; then
-                PRELOADED_APK="$apk"
-                break 2
-              fi
-            done < <(find "$TOOLS_DIR" -type f -name "*.$ext" -printf '%p\n' 2>/dev/null || true)
-          done
+            PRELOADED_APK=""
+            for ext in apk xapk apkm apks; do
+              while IFS= read -r apk; do
+                [ -z "$apk" ] && continue
+                apk_name=$(basename "$apk")
+                apk_version=$(echo "$apk_name" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+                if [ "$apk_version" = "$TARGET_VERSION" ]; then
+                  PRELOADED_APK="$apk"
+                  break 2
+                fi
+              done < <(find "$TOOLS_DIR" -type f -name "*.$ext" -printf '%p\n' 2>/dev/null || true)
+            done
 
-          if [ -n "$PRELOADED_APK" ] && [ -f "$PRELOADED_APK" ]; then
-            echo "::notice::Using pre-downloaded APK from check-versions: $PRELOADED_APK (matches v$TARGET_VERSION)"
-            cp "$PRELOADED_APK" "$APKS_DIR/"
-            DOWNLOAD_SUCCESS=true
-          else
-            # Try unified-downloader.js to download the specific version
-            echo "::notice::No matching APK found for v$TARGET_VERSION, using unified-downloader..."
-            if RESULT=$(node .github/scripts/unified-downloader.js "$APP_ID" "$TARGET_VERSION" "$APKS_DIR" 2>&1); then
-              echo "::notice::unified-downloader succeeded: $RESULT"
+            if [ -n "$PRELOADED_APK" ] && [ -f "$PRELOADED_APK" ]; then
+              echo "::notice::Using pre-downloaded APK from check-versions: $PRELOADED_APK (matches v$TARGET_VERSION)"
+              cp "$PRELOADED_APK" "$APKS_DIR/"
               DOWNLOAD_SUCCESS=true
             else
-              echo "::warning::unified-downloader failed: $RESULT"
+              echo "::notice::No matching APK found for v$TARGET_VERSION, using unified-downloader..."
+              if RESULT=$(node .github/scripts/unified-downloader.js "$APP_ID" "$TARGET_VERSION" "$APKS_DIR" 2>&1); then
+                echo "::notice::unified-downloader succeeded: $RESULT"
+                DOWNLOAD_SUCCESS=true
+              else
+                echo "::warning::unified-downloader failed: $RESULT"
 
-              # Fallback to manual URL if provided
-              if [ -n "$MANUAL_URL" ]; then
-                echo "::notice::Trying manual URL fallback..."
-                if download_with_playwright "$MANUAL_URL"; then
-                  DOWNLOAD_SUCCESS=true
-                elif download_with_curl "$MANUAL_URL"; then
-                  DOWNLOAD_SUCCESS=true
+                if [ -n "$MANUAL_URL" ]; then
+                  echo "::notice::Trying manual URL fallback..."
+                  if download_with_playwright "$MANUAL_URL"; then
+                    DOWNLOAD_SUCCESS=true
+                  elif download_with_curl "$MANUAL_URL"; then
+                    DOWNLOAD_SUCCESS=true
+                  fi
                 fi
               fi
             fi
           fi
-          fi  # end: no cached APK
 
           if [ "$DOWNLOAD_SUCCESS" = false ]; then
             echo "::error::No APK could be downloaded for $APP_ID version $TARGET_VERSION."
             exit 1
           fi
 
-          # Validate downloaded APK has correct version using aapt
           echo "::notice::Validating APK version matches target v$TARGET_VERSION using aapt..."
 
           # Ensure aapt is available (comes with android-sdk or can be installed)

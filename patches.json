@@ -76,6 +76,7 @@
       "Open videos fullscreen": true,
       "Override YouTube Music actions": true,
       "Playback speed": true,
+      "Reload video": true,
       "Remove background playback restrictions": true,
       "Remove viewer discretion dialog": true,
       "Return YouTube Dislike": true,
