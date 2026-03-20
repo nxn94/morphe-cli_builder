@@ -775,6 +775,9 @@ jobs:
             rm -f "$APKS_DIR"/* || true
           fi
 
+          # Only run download logic if no cached APK
+          if [ -z "$CACHED_APK" ]; then
+
           # Manual source URL override (fallback).
           # config.json shape:
           # {
@@ -1035,6 +1038,7 @@ jobs:
             fi
           fi
           fi  # end: no cached APK
+          fi  # end: if no cached APK
 
           if [ "$DOWNLOAD_SUCCESS" = false ]; then
             echo "::error::No APK could be downloaded for $APP_ID version $TARGET_VERSION."
