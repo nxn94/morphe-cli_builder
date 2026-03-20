@@ -773,6 +773,7 @@ jobs:
             DOWNLOAD_SUCCESS=true
           else
             rm -f "$APKS_DIR"/* || true
+          fi
 
           # Manual source URL override (fallback).
           # config.json shape:
