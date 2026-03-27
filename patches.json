@@ -61,7 +61,7 @@
       "Hide end screen suggested video": true,
       "Hide info cards": true,
       "Hide layout components": true,
-      "Hide player flyout menu items": true,
+      "Hide player flyout menu components": true,
       "Hide player overlay buttons": true,
       "Hide related video overlay": true,
       "Hide related videos": true,
