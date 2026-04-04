@@ -23,6 +23,7 @@
       "Permanent repeat": true,
       "Remove background playback restrictions": true,
       "Sanitize sharing links": true,
+      "Spoof video streams": true,
       "Theme": true
     },
     "com.google.android.youtube": {
@@ -86,6 +87,7 @@
       "SponsorBlock": true,
       "Spoof app version": true,
       "Spoof device dimensions": true,
+      "Spoof video streams": true,
       "Swipe controls": true,
       "Theme": true,
       "Video ads": true,
