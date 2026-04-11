@@ -2,12 +2,12 @@
   "patches": {
     "MorpheApp/morphe-patches": {
       "branch": "main",
-      "version": "v1.24.0-dev.1"
+      "version": "v1.24.0-dev.4"
     }
   },
   "cli_branch": "dev",
   "cli_version": "v1.6.4-dev.2",
-  "last_build": "2026-04-10T07:04:36Z",
+  "last_build": "2026-04-11T06:17:06Z",
   "status": "success",
   "build_history": [
     {
@@ -588,6 +588,21 @@
       "run_id": "24230839139",
       "run_number": 180,
       "commit": "0ed7b20332c61cb3efc41a938eaf5800fddaa151"
+    },
+    {
+      "timestamp": "2026-04-11T06:17:06Z",
+      "patches": {
+        "MorpheApp/morphe-patches": {
+          "branch": "main",
+          "version": "v1.24.0-dev.4"
+        }
+      },
+      "cli_version": "v1.6.4-dev.2",
+      "cli_branch": "dev",
+      "status": "success",
+      "run_id": "24276410837",
+      "run_number": 181,
+      "commit": "9a30c30f9bd433c118aed8488975fde30b9e2faa"
     }
   ]
 }
