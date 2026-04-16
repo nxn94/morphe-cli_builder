@@ -164,6 +164,16 @@ Repo-keyed structure: each top-level key is an `owner/repo` patch repository, ma
 - **Constants**: UPPER_SNAKE_CASE
 - **Git commits**: conventional commits (`feat:`, `fix:`, `chore:`, `docs:`)
 
+## Adding a New App
+
+The workflow dynamically builds its job matrix from `config.json`'s `patch_repos` — no workflow edits needed. To add an app:
+
+1. Add to `config.json`:
+   - `apkmirror_paths`: map package ID → APKMirror URL slug (e.g. `"com.example.app": "publisher/app-name"`)
+   - `patch_repos`: map package ID → `{ "name": "<short-name>", "repo": "<owner/repo>", "branch": "<branch>" }`
+2. Run the `update-patches.yml` workflow — it will populate `patches.json` with the new app's patches from the upstream repo.
+3. Edit `patches.json` to enable/disable specific patches as desired.
+
 ## Troubleshooting
 
 - Check workflow run logs in GitHub Actions for `::error::` and `::warning::` markers
