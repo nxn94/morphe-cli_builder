@@ -24,7 +24,8 @@
       "Remove background playback restrictions": true,
       "Sanitize sharing links": true,
       "Spoof video streams": true,
-      "Theme": true
+      "Theme": true,
+      "Track crossfade": true
     },
     "com.google.android.youtube": {
       "Alternative thumbnails": true,
