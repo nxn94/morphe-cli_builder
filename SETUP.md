@@ -46,14 +46,32 @@ Edit `config.json` to set build options:
 ```json
 {
   "preferred_arch": "arm64-v8a",
+  "auto_update_urls": true,
   "apkmirror_paths": {
     "com.google.android.youtube": "google-inc/youtube",
     "com.google.android.apps.youtube.music": "google-inc/youtube-music",
     "com.reddit.frontpage": "redditinc/reddit"
   },
-  "branches": {
-    "morphe_patches": "main",
-    "morphe_cli": "main"
+  "patch_repos": {
+    "com.google.android.youtube": {
+      "name": "youtube",
+      "repo": "MorpheApp/morphe-patches",
+      "branch": "dev"
+    },
+    "com.google.android.apps.youtube.music": {
+      "name": "ytmusic",
+      "repo": "MorpheApp/morphe-patches",
+      "branch": "dev"
+    },
+    "com.reddit.frontpage": {
+      "name": "reddit",
+      "repo": "MorpheApp/morphe-patches",
+      "branch": "dev"
+    }
+  },
+  "cli": {
+    "repo": "MorpheApp/morphe-cli",
+    "branch": "dev"
   }
 }
 ```
@@ -61,30 +79,31 @@ Edit `config.json` to set build options:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `preferred_arch` | `arm64-v8a` | CPU architecture to prefer when selecting APK variant |
-| `apkmirror_paths` | see above | Maps package IDs to APKMirror app slugs — required for auto-resolution |
-| `branches.morphe_patches` | `main` | Morphe patches branch (`main` or `dev`) |
-| `branches.morphe_cli` | `main` | morphe-cli branch (`main` or `dev`) |
+| `auto_update_urls` | `true` | Auto-update download URLs after each successful build |
+| `apkmirror_paths` | see above | Maps package IDs to APKMirror URL slugs — required for auto-resolution |
+| `patch_repos` | — | Per-app patch repo, branch, and display name |
+| `cli` | — | morphe-cli repo and branch (`main` or `dev`) |
 
 The `download_urls` field is managed automatically by the workflow after each successful build. You don't need to set it manually.
 
 ## 5. Configure `patches.json`
 
-Edit `patches.json` to choose which patches to enable or disable:
+Edit `patches.json` to choose which patches to enable or disable. The workflow is repo-keyed — run `update-patches.yml` first to populate it, then edit:
 
 ```json
 {
-  "com.google.android.youtube": {
-    "Hide ads": true,
-    "SponsorBlock": true,
-    "Return YouTube Dislike": false
-  },
-  "com.google.android.apps.youtube.music": {
-    "Hide ads": true,
-    "Remove background playback restrictions": true
-  },
-  "com.reddit.frontpage": {
-    "Hide ads": true,
-    "Open links directly": true
+  "MorpheApp/morphe-patches": {
+    "com.google.android.youtube": {
+      "Hide ads": true,
+      "SponsorBlock": true,
+      "Return YouTube Dislike": false
+    },
+    "com.google.android.apps.youtube.music": {
+      "Hide music video ads": true
+    },
+    "com.reddit.frontpage": {
+      "Hide ads": true
+    }
   }
 }
 ```
@@ -106,7 +125,7 @@ The build only runs when Morphe patch or CLI versions have changed since the las
 
 You get:
 
-- GitHub Actions artifacts: `<app>-<patches-version>-v<base-version>.apk`
+- GitHub Actions artifacts: `<app>-v<base-version>-<patches-version>.apk`
 - GitHub Release tagged `vYYYY.MM.DD` containing all APKs
 
 ## 8. Add To Obtainium
@@ -118,19 +137,20 @@ For each entry:
 1. Source: `GitHub`
 2. Repository URL: `https://github.com/<your-user>/<your-repo>`
 3. Filter (regex):
-   - YouTube: `^youtube.*\.apk$`
-   - YouTube Music: `^ytmusic.*\.apk$`
-   - Reddit: `^reddit.*\.apk$`
+   - YouTube: `^youtube-v.*\.apk$`
+   - YouTube Music: `^ytmusic-v.*\.apk$`
+   - Reddit: `^reddit-v.*\.apk$`
 
 ## Notes On APK Download
 
-The workflow downloads APKs using a multi-source fallback chain:
+The workflow downloads APKs using a multi-source fallback chain (first valid result wins):
 
-1. **URL cache** — previously resolved direct download URLs (instant)
-2. **config.json URLs** — version-specific URLs saved by the `update-download-urls` job
-3. **apkeep (APKPure)** — tries first in parallel resolution
-4. **APKMirror scraper** — 3-page navigation using curl; automatically falls back to Playwright (Chromium) if Cloudflare blocks curl
-5. **APKMirror API** — tried in parallel alongside the scraper
+1. **Pre-downloaded APKs** — from `check-versions` job output
+2. **URL cache** — `~/.cache/auto-morphe-builder/urls/` for previously resolved direct download URLs
+3. **config.json URLs** — version-specific URLs saved by the `update-download-urls` job
+4. **apkeep (APKPure)** — tried in parallel
+5. **APKMirror API** — tried in parallel
+6. **APKMirror scraper** — 3-page navigation using curl; falls back to Playwright (Chromium) if Cloudflare blocks curl
 
 The APKMirror scraper navigates release page → variant page → download page within the same browser session, preserving session cookies needed for the final download.
 

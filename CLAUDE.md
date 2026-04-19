@@ -50,10 +50,11 @@ npx eslint .github/scripts/*.js
 
 The workflow has these main jobs:
 
-1. **check-versions**: Queries Morphe GitHub repos for latest patch/CLI versions, determines if build is needed
-2. **setup**: Prepares tools (morphe-cli.jar, APKEditor), decodes keystore, downloads APKs
-3. **build-app**: Runs morphe-cli to patch each APK
-4. **create-release**: Creates GitHub Release with dated tag `vYYYY.MM.DD`
+1. **check-versions**: Queries Morphe GitHub repos for latest patch/CLI versions, determines if build is needed, pre-downloads APKs
+2. **build**: Per-app parallel matrix jobs — patch each APK
+3. **create-release**: Creates GitHub Release with dated tag `vYYYY.MM.DD`
+4. **update-download-urls**: Persists resolved download URLs to `config.json`
+5. **update-state**: Updates `state.json` with new versions and build history
 
 ### Key Files
 
@@ -86,7 +87,7 @@ Multi-source fallback chain (first valid result wins):
 - Prioritizes configured architecture (`preferred_arch`, defaults to `arm64-v8a`)
 - DPI preference order: `nodpi` → `120-640dpi` → `240-480dpi`
 - Rejects dex-less APKs (requires `classes*.dex`)
-- Output artifacts named `<app>-<patches-version>-v<base-version>.apk`
+- Output artifacts named `<app>-v<base-version>-<patches-version>.apk`
 
 ### Workflow: `update-patches.yml`
 

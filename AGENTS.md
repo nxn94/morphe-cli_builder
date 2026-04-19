@@ -1,227 +1,105 @@
 # AGENTS.md - AutoMorpheBuilder
 
-This file provides guidelines for agentic coding agents working in this repository.
-
 ## Project Overview
 
-AutoMorpheBuilder is a GitHub Actions-based automation project for building patched Android APKs using Morphe patches. It's primarily a CI/CD configuration project, not a traditional software application.
+GitHub Actions CI/CD project for building patched Android APKs with Morphe patches. Not a traditional app — the workflow *is* the product.
 
-## Project Structure
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `config.json` | Build config: `patch_repos` (per-app), `cli` repo/branch, APKMirror paths, cached download URLs |
+| `patches.json` | Patch toggles — repo-keyed: `{ "owner/repo": { "pkg": { "Patch": true } } }` |
+| `state.json` | Tracks live Morphe versions and build history |
+| `.github/workflows/morphe-build.yml` | Main workflow (1877 lines — contains all build logic) |
+| `.github/workflows/update-patches.yml` | Manual workflow to sync `patches.json` from upstream |
+| `.github/scripts/unified-downloader.js` | APK downloader with multi-source fallback + Playwright |
+| `.github/scripts/update-download-urls.js` | Writes resolved URLs back to `config.json` |
+| `.github/scripts/__tests__/apkmirror-scraper.test.js` | Jest unit tests |
+
+## Workflow Jobs
 
 ```
-.
-├── .github/
-│   ├── workflows/
-│   │   └── morphe-build.yml    # Main GitHub Actions workflow
-│   └── scripts/
-│       ├── apkmirror-playwright.js
-│       ├── apkmirror-version-resolver.js
-│       └── apkmirror-downloader.js
-├── tools/
-│   ├── morphe-cli.jar          # Morphe CLI tool
-│   └── patches-*.mpp           # Morphe patch definitions
-├── patches.json                # Patch configuration (user-editable)
-├── state.json                 # Build state tracking
-├── README.md                   # Project documentation
-└── SETUP.md                   # Setup guide
+check-versions → build (matrix per app) → create-release → update-download-urls + update-state
 ```
 
-## Build/Test Commands
+- `check-versions`: Queries GitHub for latest Morphe patch/CLI tags, decides whether build is needed
+- `build`: Per-app parallel matrix jobs — download APK, patch, sign, output artifact
+- `create-release`: Creates GitHub Release `vYYYY.MM.DD`
+- `update-download-urls`: Persists resolved download URLs to `config.json`
+- `update-state`: Updates `state.json` with new versions and build history
 
-This project doesn't have traditional build commands. Testing is done via GitHub Actions:
+## Config Structure (CRITICAL)
 
-### Running the Workflow
-
-1. **Manual Trigger**: Go to GitHub Actions → "Build Morphe-patched apps" → "Run workflow"
-2. **Automatic**: Runs daily at 05:15 UTC (scheduled)
-3. **Local Validation**: Run `actionlint` on the workflow:
-   ```bash
-   docker run --rm -v $(pwd):/repo ghcr.io/rhysd/actionlint:latest -color .
-   ```
-
-### JSON Validation
-
-Validate JSON files:
-```bash
-# Validate patches.json
-jq '.' patches.json > /dev/null && echo "Valid JSON"
-
-# Validate state.json
-jq '.' state.json > /dev/null && echo "Valid JSON"
-```
-
-### Shell Script Validation
-
-```bash
-# Check shell scripts with shellcheck
-shellcheck .github/scripts/*.sh
-```
-
-### JavaScript Linting
-
-```bash
-# Lint JavaScript files (requires Node.js)
-npx eslint .github/scripts/*.js
-```
-
-## Code Style Guidelines
-
-### General Principles
-
-- **Shell scripts**: Use `set -euo pipefail` for strict error handling
-- **JSON**: Use consistent indentation (2 spaces)
-- **YAML**: Use consistent indentation (2 spaces)
-- **JavaScript**: Use ES6+ features, prefer async/await over callbacks
-
-### YAML (GitHub Actions Workflows)
-
-```yaml
-# Use 2-space indentation
-# Use quotes for strings that could be misinterpreted
-# Prefer explicit Boolean values (true/false over yes/no)
-
-- name: Checkout
-  uses: actions/checkout@v4
-
-- name: Run script
-  run: |
-    set -euo pipefail
-    # ... commands
-```
-
-### JavaScript
-
-```javascript
-// Use strict mode
-'use strict';
-
-// Use const/let, never var
-const fs = require('node:fs');
-const path = require('node:path');
-
-// Prefer async/await over promises
-async function resolveApkUrl(packageId, targetVersion, preferredArch) {
-  try {
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    return config;
-  } catch (e) {
-    throw new Error(`Error: ${e.message}`);
-  }
-}
-
-// Use template literals
-const message = `Processing ${packageId} version ${targetVersion}`;
-
-// Prefer arrow functions for callbacks
-const handler = (error) => {
-  console.error(error);
-  process.exit(1);
-};
-```
-
-### Shell Scripts
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Use descriptive variable names
-readonly APK_DIR="apps"
-readonly OUTPUT_DIR="out"
-
-# Use functions for reusable logic
-download_apk() {
-  local url="$1"
-  local output="$2"
-  
-  curl -fSL -o "$output" "$url"
-}
-```
-
-### JSON Configuration
+### config.json uses `patch_repos` + `cli` (NOT `branches`)
 
 ```json
 {
-  "__morphe": {
-    "preferred_arch": "arm64-v8a",
-    "apkmirror_paths": {
-      "com.google.android.youtube": "google-inc/youtube"
-    }
+  "patch_repos": {
+    "com.google.android.youtube": { "name": "youtube", "repo": "MorpheApp/morphe-patches", "branch": "dev" }
+  },
+  "cli": { "repo": "MorpheApp/morphe-cli", "branch": "dev" }
+}
+```
+
+### patches.json is repo-keyed
+
+```json
+{
+  "MorpheApp/morphe-patches": {
+    "com.google.android.youtube": { "Hide ads": true }
   }
 }
 ```
 
-### Naming Conventions
+## Artifact Naming
 
-- **Files**: kebab-case (`apkmirror-version-resolver.js`)
-- **Variables**: camelCase (`downloadUrl`, `targetVersion`)
-- **Constants**: UPPER_SNAKE_CASE (`MAX_RETRIES`, `DEFAULT_TIMEOUT`)
-- **Functions**: camelCase, descriptive names (`resolveApkUrl`, `mergeSplitPackage`)
-- **GitHub Actions jobs**: kebab-case (`check-versions`, `build-app`)
+Format: `<app>-v<base-version>-<patches-version>.apk`
 
-### Error Handling
+Example: `youtube-v20.44.38-v1.24.0-dev.8.apk`
 
-1. **Shell**: Always use `set -euo pipefail`
-2. **JavaScript**: Use try/catch with meaningful error messages
-3. **YAML**: Use proper error messages in `echo "::error::..."`
-4. **Fail fast**: Exit early on critical errors
+## Obtainium Regex
+
+Use: `^youtube-v.*\.apk$` / `^ytmusic-v.*\.apk$` / `^reddit-v.*\.apk$`
+
+The `-v` infix is required to distinguish from other APK files.
+
+## Developer Commands
 
 ```bash
-# Shell error handling
-set -euo pipefail
+# Run tests
+npm test                    # all tests
+npx jest file              # single test file
 
-if [ -z "$VARIABLE" ]; then
-  echo "::error::Required variable VARIABLE is not set"
-  exit 1
-fi
+# Validate workflow
+docker run --rm -v $(pwd):/repo ghcr.io/rhysd/actionlint:latest -color .
+
+# Validate JSON
+jq '.' patches.json && jq '.' config.json && jq '.' state.json
+
+# Lint JS
+npx eslint .github/scripts/*.js
 ```
 
-```javascript
-// JavaScript error handling
-try {
-  const result = await someOperation();
-} catch (error) {
-  console.error(`Operation failed: ${error.message}`);
-  process.exit(1);
-}
-```
+## Adding a New App
 
-### Git Commits
+1. Add to `config.json` `patch_repos` and `apkmirror_paths`
+2. Run `update-patches.yml` workflow (manual trigger) to populate `patches.json`
+3. Edit `patches.json` to toggle patches
+4. Push — next scheduled run builds it automatically
 
-Follow conventional commits:
-- `feat: add new app support`
-- `fix: resolve APK download issue`
-- `chore: update patches.json`
-- `docs: update README`
+No workflow edits needed — the matrix is derived from `config.json`.
 
-### Security Considerations
+## Common Failures
 
-- Never commit keystores or secrets
-- Use GitHub Secrets for sensitive data
-- Base64-encode keystore if committing (only for local testing)
-- Sanitize URLs before downloading
+- **`Chosen APK has no classes.dex`**: Downloaded a split/config APK, not the base. Usually means APKMirror only has a BUNDLE variant for that version.
+- **`Wrong version of key store`**: Keystore password wrong, or key password differs from keystore password.
+- **APK download fails**: Run workflow again — transient Cloudflare blocks are common.
+- **Build skipped despite new version**: Check that `state.json` was updated by `update-state` job. If the runner's git push failed silently, state can drift.
 
-### Key Files to Know
+## Repo Quirks
 
-1. **patches.json**: User configuration for which patches to enable/disable
-2. **state.json**: Tracks Morphe versions and build history
-3. **morphe-build.yml**: Main workflow - contains all build logic
-4. **APKMirror scripts**: Handle APK download from APKMirror
-
-### Common Operations
-
-**Adding a new app**:
-1. Add entry to `patches.json` with app package ID
-2. Add APKMirror path mapping in `__morphe.apkmirror_paths`
-3. Add app to matrix in `morphe-build.yml`
-
-**Updating Morphe version**:
-1. Run workflow manually or wait for scheduled run
-2. Workflow auto-detects new versions
-3. state.json is auto-updated
-
-**Troubleshooting builds**:
-1. Check workflow run logs in GitHub Actions
-2. Look for `::error::` and `::warning::` markers
-3. Verify patches.json is valid JSON
-4. Check that download URLs are still valid
+- Workflow runs `npm ci` then `npx playwright install chromium` on every run (not cached at npm level)
+- BouncyCastle is downloaded fresh from Maven Central each build (no lockfile)
+- Keystore conversion: source keystore → BKS for morphe-cli compatibility
+- APKMirror scraper uses Playwright when curl is blocked; all 3 pages navigated in same browser session to preserve cookies
