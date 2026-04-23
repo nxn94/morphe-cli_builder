@@ -23,23 +23,22 @@ Automated GitHub Actions pipeline for building patched Android APKs with [Morphe
 
 ## Release And Obtainium Model
 
-Each build creates a single GitHub Release with a date-based tag (`vYYYY.MM.DD`).
+Each app gets its own GitHub Release per build. Releases are named `<app>-v<base-version>-<patches-version>`.
 
-For Obtainium, use filename regex filtering:
+Example releases:
+- `youtube-v20.44.38-v1.24.0-dev.8`
+- `ytmusic-v8.44.54-v1.24.0-dev.8`
+- `reddit-v2025.02.17-v1.24.0-dev.8`
 
-| App | Regex |
-|-----|-------|
-| YouTube | `^youtube-v.*\.apk$` |
-| YouTube Music | `^ytmusic-v.*\.apk$` |
-| Reddit | `^reddit-v.*\.apk$` |
+For Obtainium, create one entry per app:
 
-> **Note:** Patched APKs are named `<app>-v<base-version>-<patches-version>.apk`, e.g. `youtube-v20.44.38-v1.24.0-dev.8.apk`.
+| App | Release Tag Filter | APK Filter |
+|-----|-------------------|------------|
+| YouTube | `^youtube-` | `^youtube-v.*\.apk$` |
+| YouTube Music | `^ytmusic-` | `^ytmusic-v.*\.apk$` |
+| Reddit | `^reddit-` | `^reddit-v.*\.apk$` |
 
-Required Obtainium fields per entry:
-
-1. Source: `GitHub`
-2. Repo URL: `https://github.com/<your-user>/<your-repo>`
-3. Use the above regex in the "Filter" field
+> **Note:** Each release contains only the APK for that app. Use the release tag filter to subscribe to one app at a time, or use the APK filter to match within a release that contains multiple apps.
 
 ## Required Secrets
 
@@ -172,8 +171,8 @@ Workflow updates:
 
 ## Artifacts And Releases
 
-- Workflow artifact upload includes versioned patched APKs named `<app>-v<base-version>-<patches-version>.apk`.
-- GitHub Release is created with tag `vYYYY.MM.DD` containing all APKs.
+- Per-app workflow artifacts: `<app>-v<base-version>-<patches-version>.apk`
+- Per-app GitHub Releases: `<app>-v<base-version>-<patches-version>` containing only that app's APK
 
 ## Setup
 

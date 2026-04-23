@@ -1547,76 +1547,72 @@ jobs:
           echo "Downloaded APKs:"
           ls -la apks/
 
-      - name: Create single release with all APKs
+      - name: Create per-app releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          DATE_TAG="v$(date -u +%Y.%m.%d)"
           CLI_VERSION="${{ needs.check-versions.outputs.cli-version }}"
           CLI_BRANCH="${{ needs.check-versions.outputs.cli-branch }}"
           REPO_VERSIONS='${{ needs.check-versions.outputs.repo-versions }}'
 
           PATCHES_SUMMARY="$(echo "$REPO_VERSIONS" | jq -r 'to_entries | map("- \(.key): \(.value)") | join("\n")')"
 
-          # Build per-app version lines from APK filenames (format: name-vBASE-PATCHES.apk)
-          APP_VERSIONS=""
-          for apk in $(ls -1 apks/*.apk 2>/dev/null | sort); do
-            apk_basename="$(basename "$apk" .apk)"
-            app_name="$(echo "$apk_basename" | sed 's/-v[0-9].*//')"
-            version="$(echo "$apk_basename" | sed 's/^[^-]*-//')"
-            APP_VERSIONS="${APP_VERSIONS}- ${app_name}: ${version}"$'\n'
-          done
-
-          RELEASE_TITLE="Morphe Patched Apps (${CLI_BRANCH}-${CLI_VERSION})"
-
-          RELEASE_NOTES="$(cat <<EOF
-          Morphe-patched apps release.
-
-          **CLI channel:** ${CLI_BRANCH}
-          **CLI version:** ${CLI_VERSION}
-
-          **Patch repo versions:**
-          ${PATCHES_SUMMARY}
-
-          ## App Versions
-          ${APP_VERSIONS}
-          ## Available APKs
-          $(ls -1 apks/*.apk | xargs -I {} basename {})
-
-          ## Obtainium Setup
-          Use filename filtering to subscribe to specific apps:
-          - YouTube: \`^youtube.*\\.apk$\`
-          - YouTube Music: \`^ytmusic.*\\.apk$\`
-          - Reddit: \`^reddit.*\\.apk$\`
-
-          Use version extraction regex (release notes) to track combined versions:
-          - YouTube: \`youtube: (v\\S+)\`
-          - YouTube Music: \`ytmusic: (v\\S+)\`
-          - Reddit: \`reddit: (v\\S+)\`
-          EOF
-          )"
-
           if [ -z "$(ls -A apks/)" ]; then
             echo "::error::No APK files found in apks/ directory"
             exit 1
           fi
 
-          if gh release view "$DATE_TAG" >/dev/null 2>&1; then
-            echo "::notice::Release $DATE_TAG exists; uploading new assets."
-            for apk in apks/*.apk; do
-              gh release upload "$DATE_TAG" "$apk" --clobber
-            done
-            gh release edit "$DATE_TAG" --title "$RELEASE_TITLE" --notes "$RELEASE_NOTES"
-          else
-            echo "::notice::Creating release $DATE_TAG"
-            gh release create "$DATE_TAG" apks/*.apk \
-              --title "$RELEASE_TITLE" \
-              --notes "$RELEASE_NOTES"
-          fi
+          # Group APKs by app name (prefix before first -v)
+          declare -A APP_APKS
+          for apk in apks/*.apk; do
+            [ -f "$apk" ] || continue
+            apk_basename="$(basename "$apk" .apk)"
+            # Extract app name: "youtube-v20.44.38-v1.24.0-dev.8" → "youtube"
+            app_name="$(echo "$apk_basename" | sed -E 's/-v[0-9].*//')"
+            APP_APKS["$app_name"]+="$apk "
+          done
 
-          echo "::notice::Published release: ${DATE_TAG}"
+          for app_name in "${!APP_APKS[@}"; do
+            # Build version string from first APK of this app
+            first_apk="$(echo "${APP_APKS[$app_name]}" | xargs -n1 | head -n1)"
+            apk_basename="$(basename "$first_apk" .apk)"
+            # version = everything after first -v: "v20.44.38-v1.24.0-dev.8"
+            version_str="$(echo "$apk_basename" | sed -E 's/^[^-]+-//')"
+
+            TAG="${app_name}-${version_str}"
+            TITLE="${app_name} (${CLI_BRANCH}-${CLI_VERSION})"
+
+            RELEASE_NOTES="$(cat <<EOF
+            ${TITLE}
+
+            **CLI version:** ${CLI_VERSION}
+            **Base + patches:** ${version_str}
+
+            **Patch repo versions:**
+            ${PATCHES_SUMMARY}
+
+            ## Obtainium Setup
+            Add source: GitHub, use filter: \`^${app_name}-v.*\\.apk$\`
+            EOF
+            )"
+
+            apk_files="${APP_APKS[$app_name]}"
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "::notice::Release $TAG exists; uploading assets."
+              for apk in $apk_files; do
+                gh release upload "$TAG" "$apk" --clobber
+              done
+              gh release edit "$TAG" --title "$TITLE" --notes "$RELEASE_NOTES"
+            else
+              echo "::notice::Creating release $TAG"
+              gh release create "$TAG" $apk_files \
+                --title "$TITLE" \
+                --notes "$RELEASE_NOTES"
+            fi
+            echo "::notice::Published release: ${TAG}"
+          done
 
   update-download-urls:
     needs: create-release

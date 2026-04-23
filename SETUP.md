@@ -123,10 +123,13 @@ The build only runs when Morphe patch or CLI versions have changed since the las
 
 ## 7. Download Outputs
 
-You get:
+You get per-app GitHub Releases (one per app):
 
-- GitHub Actions artifacts: `<app>-v<base-version>-<patches-version>.apk`
-- GitHub Release tagged `vYYYY.MM.DD` containing all APKs
+- `youtube-v<base>-<patches>` → `youtube-v20.44.38-v1.24.0-dev.8.apk`
+- `ytmusic-v<base>-<patches>` → `ytmusic-v8.44.54-v1.24.0-dev.8.apk`
+- `reddit-v<base>-<patches>` → `reddit-v2025.02.17-v1.24.0-dev.8.apk`
+
+Also available as GitHub Actions artifacts.
 
 ## 8. Add To Obtainium
 
