@@ -1577,7 +1577,7 @@ jobs:
             APP_APKS["$app_name"]+="$apk "
           done
 
-          for app_name in "${!APP_APKS[@}"; do
+          for app_name in $(printf '%s\n' "${!APP_APKS[@]}" | sort -u); do
             # Build version string from first APK of this app
             first_apk="$(echo "${APP_APKS[$app_name]}" | xargs -n1 | head -n1)"
             apk_basename="$(basename "$first_apk" .apk)"
