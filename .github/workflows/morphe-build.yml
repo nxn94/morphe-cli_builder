@@ -1548,6 +1548,7 @@ jobs:
           ls -la apks/
 
       - name: Create per-app releases
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
