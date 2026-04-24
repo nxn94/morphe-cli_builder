@@ -1531,6 +1531,9 @@ jobs:
     needs: [check-versions, build]
     if: needs.build.result == 'success' && needs.check-versions.outputs.should-build == 'true'
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1548,7 +1551,6 @@ jobs:
           ls -la apks/
 
       - name: Create per-app releases
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
