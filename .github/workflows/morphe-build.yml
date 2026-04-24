@@ -1584,18 +1584,16 @@ jobs:
             TAG="${app_name}-${version_str}"
             TITLE="${app_name} (${CLI_BRANCH}-${CLI_VERSION})"
 
-            RELEASE_NOTES="$(cat <<EOF
-            ${TITLE}
-
-            **CLI version:** ${CLI_VERSION}
-            **Base + patches:** ${version_str}
-
-            **Patch repo versions:**
-            ${PATCHES_SUMMARY}
-
-            ## Obtainium Setup
-            Add source: GitHub, use filter: \`^${app_name}-v.*\\.apk$\`
-            EOF
+            RELEASE_NOTES="$(printf '%s\n\n' \
+              "${TITLE}" \
+              "**CLI version:** ${CLI_VERSION}" \
+              "**Base + patches:** ${version_str}" \
+              "" \
+              "**Patch repo versions:**" \
+              "${PATCHES_SUMMARY}" \
+              "" \
+              "## Obtainium Setup" \
+              "Add source: GitHub, use filter: \`^${app_name}-v.*\\.apk\$\`" \
             )"
 
             apk_files="${APP_APKS[$app_name]}"
