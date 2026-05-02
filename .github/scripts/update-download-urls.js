@@ -46,6 +46,16 @@ function main() {
       config.download_urls[packageId] = {};
     }
 
+    const pinVersion = config.patch_repos?.[packageId]?.pin_version;
+    if (pinVersion) {
+      console.log(JSON.stringify({
+        success: true,
+        skipped: true,
+        reason: `pin_version is set for ${packageId} (${pinVersion}) — skipping URL update`
+      }, null, 2));
+      return;
+    }
+
     // Update the URL for the specific version and latest_supported
     config.download_urls[packageId][version] = url;
     config.download_urls[packageId].latest_supported = url;
