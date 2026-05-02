@@ -1922,6 +1922,20 @@ jobs:
           set -euo pipefail
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
+
+          # Strip download_urls entries for pinned apps before committing config.json
+          PINNED_APPS="$(jq -r '[.patch_repos | to_entries[] | select(.value.pin_version != null and .value.pin_version != "") | .key]' config.json)"
+          if [ "$PINNED_APPS" != "[]" ] && [ -n "$PINNED_APPS" ]; then
+            echo "::notice::Stripping download_urls for pinned apps: $PINNED_APPS"
+            tmp_config=$(mktemp)
+            jq --argjson pinned "$PINNED_APPS" \
+              'if .download_urls then
+                .download_urls |= with_entries(select(.key as $k | ($pinned | index($k) | not)))
+               else . end' \
+              config.json > "$tmp_config"
+            mv "$tmp_config" config.json
+          fi
+
           git add state.json patches.json config.json
 
           if git diff --cached --quiet; then
