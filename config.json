@@ -21,7 +21,8 @@
     "com.reddit.frontpage": {
       "name": "reddit",
       "repo": "MorpheApp/morphe-patches",
-      "branch": "dev"
+      "branch": "dev",
+      "pin_version": "2026.04.0"
     }
   },
   "cli": {
