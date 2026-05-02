@@ -96,6 +96,7 @@ No workflow edits needed — the matrix is derived from `config.json`.
 - **`Wrong version of key store`**: Keystore password wrong, or key password differs from keystore password.
 - **APK download fails**: Run workflow again — transient Cloudflare blocks are common.
 - **Build skipped despite new version**: Check that `state.json` was updated by `update-state` job. If the runner's git push failed silently, state can drift.
+- **`Could not resolve a Morphe-supported version`**: The `patches-list.json` format changed to `compatiblePackages` as an array of objects (with `packageName` + `targets` fields). If jq uses the old key-indexed syntax `.compatiblePackages[$pkg]`, it returns null. Use `select(.packageName == $pkg)` instead. The `targetver` step and `update-state`/`update-patches.yml` both handle both formats now.
 
 ## Repo Quirks
 

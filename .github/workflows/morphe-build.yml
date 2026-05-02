@@ -674,10 +674,11 @@ jobs:
                   select(
                     ((.use // true) == true)
                     and ((.name as $n | ($disabled | index($n)) | not))
-                    and ((.compatiblePackages[$pkg]? | type) == "array")
+                    and ((.compatiblePackages | type) == "array")
+                    and ([.compatiblePackages[]? | select(.packageName == $pkg)] | length > 0)
                   )
                 )
-              | map(.compatiblePackages[$pkg]) as $version_lists
+              | map([.compatiblePackages[]? | select(.packageName == $pkg) | .targets[]?.version] | unique) as $version_lists
               | if ($version_lists | length) == 0 then
                   empty
                 else
@@ -699,10 +700,12 @@ jobs:
                   select(
                     ((.use // true) == true)
                     and ((.name as $n | ($disabled | index($n)) | not))
-                    and ((.compatiblePackages[$pkg]? | type) == "array")
+                    and ((.compatiblePackages | type) == "array")
+                    and ([.compatiblePackages[]? | select(.packageName == $pkg)] | length > 0)
                   )
                 )
-              | map(.compatiblePackages[$pkg][])
+              | map(.compatiblePackages[]? | select(.packageName == $pkg) | .targets[]?.version)
+              | flatten
               | sort
               | group_by(.)
               | map([length, .[0]])
