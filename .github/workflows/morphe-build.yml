@@ -1601,7 +1601,7 @@ jobs:
               "## Obtainium Setup" \
               "Add source: GitHub" \
               "" \
-              "- **Release tag filter:** \`^${app_name}-\`" \
+              "- **Release tag filter:** \`^${app_name}\`" \
               "- **APK filter:** \`^${app_name}-v.*\\.apk\$\`" \
               "" \
               "**Note:** The \`-v\` infix in the APK filter is required to distinguish from other APK files." \

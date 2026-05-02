@@ -38,9 +38,9 @@ For Obtainium, create one entry per app:
 
 | App | Release Tag Filter | APK Filter |
 |-----|-------------------|------------|
-| YouTube | `^youtube-` | `^youtube-v.*\.apk$` |
-| YouTube Music | `^ytmusic-` | `^ytmusic-v.*\.apk$` |
-| Reddit | `^reddit-` | `^reddit-v.*\.apk$` |
+| YouTube | `^youtube` | `^youtube-v.*\.apk$` |
+| YouTube Music | `^ytmusic` | `^ytmusic-v.*\.apk$` |
+| Reddit | `^reddit` | `^reddit-v.*\.apk$` |
 
 > **Important:** Both filters are required. The **Release Tag Filter** selects which releases to check, and the **APK Filter** picks the right APK file within the release. The `-v` infix in the APK filter is required to distinguish from other APK files.
 
