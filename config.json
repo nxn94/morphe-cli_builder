@@ -30,10 +30,6 @@
     "branch": "dev"
   },
   "download_urls": {
-    "com.google.android.youtube": {
-      "20.44.38": "https://www.apkmirror.com/apk/google-inc/youtube/youtube-20-44-38-release/youtube-20-44-38-4-android-apk-download/",
-      "latest_supported": "https://www.apkmirror.com/apk/google-inc/youtube/youtube-20-44-38-release/youtube-20-44-38-4-android-apk-download/"
-    },
     "com.google.android.apps.youtube.music": {
       "8.44.54": "https://www.apkmirror.com/apk/google-inc/youtube-music/youtube-music-8-44-54-release/youtube-music-8-44-54-android-apk-download/",
       "latest_supported": "https://www.apkmirror.com/apk/google-inc/youtube-music/youtube-music-8-44-54-release/youtube-music-8-44-54-android-apk-download/"
