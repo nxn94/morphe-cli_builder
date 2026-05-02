@@ -10,7 +10,8 @@
     "com.google.android.youtube": {
       "name": "youtube",
       "repo": "MorpheApp/morphe-patches",
-      "branch": "main"
+      "branch": "main",
+      "pin_version": "20.47.62"
     },
     "com.google.android.apps.youtube.music": {
       "name": "ytmusic",
@@ -20,7 +21,8 @@
     "com.reddit.frontpage": {
       "name": "reddit",
       "repo": "MorpheApp/morphe-patches",
-      "branch": "main"
+      "branch": "main",
+      "pin_version": "2026.10.0"
     }
   },
   "cli": {
