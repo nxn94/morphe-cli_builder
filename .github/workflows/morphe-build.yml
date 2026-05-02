@@ -1599,7 +1599,12 @@ jobs:
               "${PATCHES_SUMMARY}" \
               "" \
               "## Obtainium Setup" \
-              "Add source: GitHub, use filter: \`^${app_name}-v.*\\.apk\$\`" \
+              "Add source: GitHub" \
+              "" \
+              "- **Release tag filter:** \`^${app_name}-\`" \
+              "- **APK filter:** \`^${app_name}-v.*\\.apk\$\`" \
+              "" \
+              "**Note:** The \`-v\` infix in the APK filter is required to distinguish from other APK files." \
             )"
 
             apk_files="${APP_APKS[$app_name]}"

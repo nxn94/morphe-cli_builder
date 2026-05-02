@@ -32,13 +32,17 @@ Example releases:
 
 For Obtainium, create one entry per app:
 
+1. Add a new source → **GitHub**
+2. Set repository to `nxn94/AutoMorpheBuilder`
+3. Fill both filter fields:
+
 | App | Release Tag Filter | APK Filter |
 |-----|-------------------|------------|
 | YouTube | `^youtube-` | `^youtube-v.*\.apk$` |
 | YouTube Music | `^ytmusic-` | `^ytmusic-v.*\.apk$` |
 | Reddit | `^reddit-` | `^reddit-v.*\.apk$` |
 
-> **Note:** Each release contains only the APK for that app. Use the release tag filter to subscribe to one app at a time, or use the APK filter to match within a release that contains multiple apps.
+> **Important:** Both filters are required. The **Release Tag Filter** selects which releases to check, and the **APK Filter** picks the right APK file within the release. The `-v` infix in the APK filter is required to distinguish from other APK files.
 
 ## Required Secrets
 
