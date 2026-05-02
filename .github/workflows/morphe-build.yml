@@ -679,6 +679,30 @@ jobs:
         run: |
           set -euo pipefail
 
+          PINNED_VERSION="$(jq -r --arg pkg '${{ matrix.appId }}' '.patch_repos[$pkg].pin_version // empty' config.json 2>/dev/null || true)"
+
+          if [ -n "$PINNED_VERSION" ] && [ "$PINNED_VERSION" != "null" ]; then
+            echo "::notice::Using pinned version for ${{ matrix.appId }}: $PINNED_VERSION"
+
+            PINNED_COMPATIBLE="$(jq -r \
+              --arg pkg '${{ matrix.appId }}' \
+              --arg ver "$PINNED_VERSION" \
+              '[.patches[]? | select(
+                ((.use // true) == true)
+                and ((.compatiblePackages | type) == "array")
+                and ([.compatiblePackages[]? | select(.packageName == $pkg and .targets[]?.version == $ver)] | length > 0)
+              )] | length' "$TOOLS_DIR/patches-list.json" 2>/dev/null || echo "0")"
+
+            if [ "$PINNED_COMPATIBLE" -gt 0 ]; then
+              echo "version=$PINNED_VERSION" >> "$GITHUB_OUTPUT"
+              echo "versions=$PINNED_VERSION" >> "$GITHUB_OUTPUT"
+              echo "Selected version for ${{ matrix.appId }}: $PINNED_VERSION (pinned, validated against patches-list.json)"
+              exit 0
+            else
+              echo "::warning::Pinned version $PINNED_VERSION is not in the compatible list for ${{ matrix.appId }}; falling back to auto-resolution"
+            fi
+          fi
+
           DISABLED_PATCHES_JSON="$(jq -c \
             --arg repo "$PATCH_REPO" \
             --arg pkg "${{ matrix.appId }}" \
