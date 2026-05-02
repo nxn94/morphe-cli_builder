@@ -356,40 +356,61 @@ jobs:
                 continue
               fi
 
-              # morphe-cli list-versions reads tools/patches.mpp by default; swap in the right .mpp
-              cp "$MPP_FILE" tools/patches.mpp
-              echo "Getting supported version for $PKG..."
-              VERSIONS_OUTPUT=$(java -jar tools/morphe-cli.jar list-versions "$PKG" 2>/dev/null || echo "")
-              echo "::debug::morphe-cli output for $PKG: $VERSIONS_OUTPUT"
+              # Check if this app has a pinned version
+              PINNED_VERSION="$(jq -r --arg pkg "$PKG" '.patch_repos[$pkg].pin_version // empty' config.json)"
+              if [ -n "$PINNED_VERSION" ] && [ "$PINNED_VERSION" != "null" ]; then
+                echo "::notice::Using pinned version for $PKG: $PINNED_VERSION"
+                VERSION_TO_DOWNLOAD="$PINNED_VERSION"
+              else
+                # Normal flow: get latest supported version from morphe-cli
+                cp "$MPP_FILE" tools/patches.mpp
+                echo "Getting supported version for $PKG..."
+                VERSIONS_OUTPUT=$(java -jar tools/morphe-cli.jar list-versions "$PKG" 2>/dev/null || echo "")
+                echo "::debug::morphe-cli output for $PKG: $VERSIONS_OUTPUT"
+                VERSION_TO_DOWNLOAD=$(echo "$VERSIONS_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+              fi
 
-              LATEST_VERSION=$(echo "$VERSIONS_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
-              echo "::debug::Extracted version for $PKG: $LATEST_VERSION"
-
-              if [ -z "$LATEST_VERSION" ]; then
+              if [ -z "$VERSION_TO_DOWNLOAD" ]; then
                 echo "Could not determine version for $PKG, skipping..."
                 continue
               fi
 
-              echo "Downloading $PKG version $LATEST_VERSION..."
+              echo "Downloading $PKG version $VERSION_TO_DOWNLOAD..."
 
               APK_DIR="tools/apks"
               mkdir -p "$APK_DIR"
 
-              RESULT=$(node .github/scripts/unified-downloader.js "$PKG" "$LATEST_VERSION" "$APK_DIR" 2>&1) || true
+              RESULT=$(node .github/scripts/unified-downloader.js "$PKG" "$VERSION_TO_DOWNLOAD" "$APK_DIR" 2>&1) || true
               echo "::debug::unified-downloader result for $PKG: $RESULT"
 
               if echo "$RESULT" | jq -e '.success' >/dev/null 2>&1; then
                 FILEPATH=$(echo "$RESULT" | jq -r '.filepath')
                 SOURCE=$(echo "$RESULT" | jq -r '.source')
-                echo "Downloaded $PKG via $SOURCE: $FILEPATH"
-
-                # Instead of calling update-download-urls here, save to temp file
                 URL=$(echo "$RESULT" | jq -r '.url // empty')
+                echo "Downloaded $PKG via $SOURCE: $FILEPATH"
                 if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-                  echo "RESULT:$PKG:$LATEST_VERSION:$URL" >> "$RESULTS_FILE.tmp"
+                  echo "RESULT:$PKG:$VERSION_TO_DOWNLOAD:$URL" >> "$RESULTS_FILE.tmp"
                 fi
               else
-                echo "Failed to download $PKG: $RESULT"
+                echo "Failed to download $PKG (version $VERSION_TO_DOWNLOAD): $RESULT"
+                # If pinned version failed, fall back to auto-resolution
+                if [ -n "$PINNED_VERSION" ] && [ "$PINNED_VERSION" != "null" ]; then
+                  echo "::notice::Pinned version download failed; falling back to auto-resolution for $PKG..."
+                  cp "$MPP_FILE" tools/patches.mpp
+                  VERSIONS_OUTPUT=$(java -jar tools/morphe-cli.jar list-versions "$PKG" 2>/dev/null || echo "")
+                  FALLBACK_VERSION=$(echo "$VERSIONS_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+                  if [ -n "$FALLBACK_VERSION" ]; then
+                    echo "::notice::Retrying download with auto-resolved version: $FALLBACK_VERSION"
+                    FALLBACK_RESULT=$(node .github/scripts/unified-downloader.js "$PKG" "$FALLBACK_VERSION" "$APK_DIR" 2>&1) || true
+                    if echo "$FALLBACK_RESULT" | jq -e '.success' >/dev/null 2>&1; then
+                      echo "Downloaded $PKG via fallback: $(echo "$FALLBACK_RESULT" | jq -r '.filepath')"
+                      FALLBACK_URL=$(echo "$FALLBACK_RESULT" | jq -r '.url // empty')
+                      if [ -n "$FALLBACK_URL" ] && [ "$FALLBACK_URL" != "null" ]; then
+                        echo "RESULT:$PKG:$FALLBACK_VERSION:$FALLBACK_URL" >> "$RESULTS_FILE.tmp"
+                      fi
+                    fi
+                  fi
+                fi
               fi
           done < <(jq -r '.patch_repos | keys[]' config.json)
 
