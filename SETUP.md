@@ -56,7 +56,8 @@ Edit `config.json` to set build options:
     "com.google.android.youtube": {
       "name": "youtube",
       "repo": "MorpheApp/morphe-patches",
-      "branch": "dev"
+      "branch": "dev",
+      "pin_version": "20.45.36"
     },
     "com.google.android.apps.youtube.music": {
       "name": "ytmusic",
@@ -81,7 +82,7 @@ Edit `config.json` to set build options:
 | `preferred_arch` | `arm64-v8a` | CPU architecture to prefer when selecting APK variant |
 | `auto_update_urls` | `true` | Auto-update download URLs after each successful build |
 | `apkmirror_paths` | see above | Maps package IDs to APKMirror URL slugs — required for auto-resolution |
-| `patch_repos` | — | Per-app patch repo, branch, and display name |
+| `patch_repos` | — | Per-app patch repo, branch, display name, and optional `pin_version` to lock a specific APK version |
 | `cli` | — | morphe-cli repo and branch (`main` or `dev`) |
 
 The `download_urls` field is managed automatically by the workflow after each successful build. You don't need to set it manually.

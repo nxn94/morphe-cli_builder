@@ -8,7 +8,7 @@ GitHub Actions CI/CD project for building patched Android APKs with Morphe patch
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Build config: `patch_repos` (per-app), `cli` repo/branch, APKMirror paths, cached download URLs |
+| `config.json` | Build config: `patch_repos` (per-app, optional `pin_version`), `cli` repo/branch, APKMirror paths, cached download URLs |
 | `patches.json` | Patch toggles — repo-keyed: `{ "owner/repo": { "pkg": { "Patch": true } } }` |
 | `state.json` | Tracks live Morphe versions and build history |
 | `.github/workflows/morphe-build.yml` | Main workflow (1877 lines — contains all build logic) |
@@ -36,7 +36,7 @@ check-versions → build (matrix per app) → create-release → update-download
 ```json
 {
   "patch_repos": {
-    "com.google.android.youtube": { "name": "youtube", "repo": "MorpheApp/morphe-patches", "branch": "dev" }
+    "com.google.android.youtube": { "name": "youtube", "repo": "MorpheApp/morphe-patches", "branch": "dev", "pin_version": "20.45.36" }
   },
   "cli": { "repo": "MorpheApp/morphe-cli", "branch": "dev" }
 }

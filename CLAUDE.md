@@ -61,7 +61,7 @@ The workflow has these main jobs:
 | File | Purpose |
 |------|---------|
 | `patches.json` | Patch toggles — repo-keyed structure: `{ "owner/repo": { "pkg": { "Patch": true } } }` |
-| `config.json` | Build configuration — preferred arch, APKMirror paths, per-app patch repo assignments, cached download URLs |
+| `config.json` | Build configuration — preferred arch, APKMirror paths, per-app patch repo assignments (optional `pin_version`), cached download URLs |
 | `state.json` | Tracks Morphe versions and build history |
 | `.github/workflows/morphe-build.yml` | Main CI/CD workflow with all build logic |
 | `.github/workflows/update-patches.yml` | Manual-trigger workflow to sync `patches.json` from upstream patch repos before building |
@@ -114,7 +114,7 @@ Intended usage: Run `update-patches` → review/edit `patches.json` → run full
     "com.google.android.youtube": "google-inc/youtube"
   },
   "patch_repos": {
-    "com.google.android.youtube": { "name": "youtube", "repo": "MorpheApp/morphe-patches", "branch": "dev" }
+    "com.google.android.youtube": { "name": "youtube", "repo": "MorpheApp/morphe-patches", "branch": "dev", "pin_version": "20.45.36" }
   },
   "cli": { "repo": "MorpheApp/morphe-cli", "branch": "dev" },
   "download_urls": {
@@ -130,7 +130,7 @@ Intended usage: Run `update-patches` → review/edit `patches.json` → run full
 | `preferred_arch` | `arm64-v8a` | Target ABI for APK selection |
 | `auto_update_urls` | — | When true, `update-download-urls.js` persists resolved URLs back to this file |
 | `apkmirror_paths` | — | Maps package ID to APKMirror URL path segment |
-| `patch_repos` | — | Maps each app package ID to `{ name, repo, branch }`. Apps absent from this map are skipped by the build. |
+| `patch_repos` | — | Maps each app package ID to `{ name, repo, branch, pin_version? }`. Apps absent from this map are skipped by the build. `pin_version` locks to a specific APK version. |
 | `cli` | — | Patch CLI repo and branch: `{ repo, branch }` for `morphe-cli`. |
 | `download_urls` | — | Version-specific cached download URLs, written by `update-download-urls.js` |
 
@@ -171,7 +171,7 @@ The workflow dynamically builds its job matrix from `config.json`'s `patch_repos
 
 1. Add to `config.json`:
    - `apkmirror_paths`: map package ID → APKMirror URL slug (e.g. `"com.example.app": "publisher/app-name"`)
-   - `patch_repos`: map package ID → `{ "name": "<short-name>", "repo": "<owner/repo>", "branch": "<branch>" }`
+   - `patch_repos`: map package ID → `{ "name": "<short-name>", "repo": "<owner/repo>", "branch": "<branch>" }` (optional `"pin_version"` to lock version)
 2. Run the `update-patches.yml` workflow — it will populate `patches.json` with the new app's patches from the upstream repo.
 3. Edit `patches.json` to enable/disable specific patches as desired.
 

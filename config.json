@@ -10,7 +10,8 @@
     "com.google.android.youtube": {
       "name": "youtube",
       "repo": "MorpheApp/morphe-patches",
-      "branch": "dev"
+      "branch": "dev",
+      "pin_version": "20.45.36"
     },
     "com.google.android.apps.youtube.music": {
       "name": "ytmusic",
