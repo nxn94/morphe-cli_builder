@@ -1063,8 +1063,32 @@ jobs:
           fi
 
           if [ "$DOWNLOAD_SUCCESS" = false ]; then
-            echo "::error::No APK could be downloaded for $APP_ID version $TARGET_VERSION."
-            exit 1
+            # Emergency fallback: if pinned version failed, try morphe-cli list-versions
+            PINNED_CHECK="$(jq -r --arg pkg "$APP_ID" '.patch_repos[$pkg].pin_version // empty' config.json 2>/dev/null || true)"
+            if [ -n "$PINNED_CHECK" ] && [ "$PINNED_CHECK" != "null" ] && [ "$PINNED_CHECK" = "$TARGET_VERSION" ]; then
+              echo "::warning::Pinned version $PINNED_CHECK download failed; attempting emergency fallback to list-versions..."
+              FALLBACK_SLUG="${PATCH_REPO//\//-}"
+              if [ -f "tools/${FALLBACK_SLUG}.mpp" ]; then
+                cp "tools/${FALLBACK_SLUG}.mpp" tools/patches.mpp
+                FALLBACK_VERSIONS=$(java -jar tools/morphe-cli.jar list-versions "$APP_ID" 2>/dev/null || echo "")
+                FALLBACK_VERSION=$(echo "$FALLBACK_VERSIONS" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+                if [ -n "$FALLBACK_VERSION" ]; then
+                  echo "::notice::Emergency fallback: retrying with version $FALLBACK_VERSION"
+                  TARGET_VERSION="$FALLBACK_VERSION"
+                  if RESULT=$(node .github/scripts/unified-downloader.js "$APP_ID" "$FALLBACK_VERSION" "$APKS_DIR" 2>&1); then
+                    echo "::notice::Emergency fallback succeeded: $RESULT"
+                    DOWNLOAD_SUCCESS=true
+                  else
+                    echo "::warning::Emergency fallback also failed: $RESULT"
+                  fi
+                fi
+              fi
+            fi
+
+            if [ "$DOWNLOAD_SUCCESS" = false ]; then
+              echo "::error::No APK could be downloaded for $APP_ID version $TARGET_VERSION."
+              exit 1
+            fi
           fi
 
           echo "::notice::Validating APK version matches target v$TARGET_VERSION using aapt..."
