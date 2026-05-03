@@ -84,7 +84,7 @@ jobs:
                 ' || true
               )"
               if [ -z "$selected_tag" ]; then
-                echo "::warning::No dev-style release found for ${repo}; falling back to latest release tag."
+                echo "No dev-style release found for ${repo}; falling back to latest release tag."
                 selected_tag="$stable_tag"
               fi
             fi
@@ -99,15 +99,15 @@ jobs:
           # Resolve tag for each unique patch repo+branch pair
           declare -A REPO_TAGS
           while IFS='|' read -r repo branch; do
-            echo "::notice::Resolving tag for ${repo} (branch=${branch})..."
+            echo "Resolving tag for ${repo} (branch=${branch})..."
             tag="$(resolve_release_tag "$repo" "$branch")"
-            echo "::notice::  ${repo} -> ${tag}"
+            echo "  ${repo} -> ${tag}"
             REPO_TAGS["$repo"]="$tag"
           done <<< "$REPO_PAIRS"
 
           # Resolve CLI tag
           CLI_TAG="$(resolve_release_tag "$CLI_REPO" "$CLI_BRANCH")"
-          echo "::notice::CLI (${CLI_REPO}) -> ${CLI_TAG}"
+          echo "CLI (${CLI_REPO}) -> ${CLI_TAG}"
 
           # Build matrix-include JSON array
           MATRIX_INCLUDE="$(jq -c '
@@ -169,12 +169,12 @@ jobs:
               PREV_REPO_VERSIONS="$(jq -c '.patches | map_values(.version)' state.json)"
             else
               # Old flat structure (pre-migration): treat as unknown versions
-              echo "::notice::state.json uses old flat structure; treating patch versions as unknown (will trigger build)."
+              echo "state.json uses old flat structure; treating patch versions as unknown (will trigger build)."
               PREV_REPO_VERSIONS="{}"
             fi
           else
             if [ -f state.json ]; then
-              echo "::warning::state.json is missing or invalid JSON; using defaults."
+              echo "state.json is missing or invalid JSON; using defaults."
             fi
           fi
 
@@ -209,7 +209,7 @@ jobs:
         if: steps.version-check.outputs.should-build == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install dependencies
         if: steps.version-check.outputs.should-build == 'true'
@@ -273,10 +273,10 @@ jobs:
 
           mkdir -p tools
 
-          echo "::notice::Downloading morphe-cli ${CLI_TAG}..."
+          echo "Downloading morphe-cli ${CLI_TAG}..."
           gh release download "$CLI_TAG" --repo "$CLI_REPO" --pattern "*.jar" --clobber || true
           for f in *.jar; do
-            [ -f "$f" ] && mv "$f" tools/morphe-cli.jar && echo "::notice::Moved $f to tools/morphe-cli.jar"
+            [ -f "$f" ] && mv "$f" tools/morphe-cli.jar && echo "Moved $f to tools/morphe-cli.jar"
           done
 
           # Download .mpp for each unique patch repo (slug-named)
@@ -296,20 +296,20 @@ jobs:
             fi
             mpp_dest="tools/${slug}.mpp"
             if [ ! -f "$mpp_dest" ]; then
-              echo "::notice::Downloading patches .mpp from ${repo}@${tag}..."
+              echo "Downloading patches .mpp from ${repo}@${tag}..."
               gh release download "$tag" --repo "$repo" --pattern "patches-*.mpp" --dir tools >/dev/null
               # Rename the downloaded .mpp to slug-named file
               for f in tools/patches-*.mpp; do
-                [ -f "$f" ] && mv "$f" "$mpp_dest" && echo "::notice::Saved as ${mpp_dest}"
+                [ -f "$f" ] && mv "$f" "$mpp_dest" && echo "Saved as ${mpp_dest}"
                 break
               done
             else
-              echo "::notice::Using existing ${mpp_dest}"
+              echo "Using existing ${mpp_dest}"
             fi
           done <<< "$REPO_PAIRS"
 
           if [ ! -f tools/morphe-cli.jar ]; then
-            echo "::warning::morphe-cli.jar not found; skipping APK version resolution."
+            echo "morphe-cli.jar not found; skipping APK version resolution."
             exit 0
           fi
 
@@ -333,7 +333,7 @@ jobs:
 
           # Install aapt for version validation in unified-downloader
           if ! command -v aapt &> /dev/null; then
-            echo "::notice::Installing aapt for version validation..."
+            echo "Installing aapt for version validation..."
             mkdir -p /tmp/android-sdk
             curl -sSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
             unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
@@ -352,14 +352,14 @@ jobs:
               MPP_FILE="tools/${PATCH_SLUG}.mpp"
 
               if [ -z "$PATCH_REPO" ] || [ ! -f "$MPP_FILE" ]; then
-                echo "::warning::No .mpp available for $PKG (repo=${PATCH_REPO:-unset}); skipping version resolution."
+                echo "No .mpp available for $PKG (repo=${PATCH_REPO:-unset}); skipping version resolution."
                 continue
               fi
 
               # Check if this app has a pinned version
               PINNED_VERSION="$(jq -r --arg pkg "$PKG" '.patch_repos[$pkg].pin_version // empty' config.json)"
               if [ -n "$PINNED_VERSION" ] && [ "$PINNED_VERSION" != "null" ]; then
-                echo "::notice::Using pinned version for $PKG: $PINNED_VERSION"
+                echo "Using pinned version for $PKG: $PINNED_VERSION"
                 VERSION_TO_DOWNLOAD="$PINNED_VERSION"
               else
                 # Normal flow: get latest supported version from morphe-cli
@@ -395,12 +395,12 @@ jobs:
                 echo "Failed to download $PKG (version $VERSION_TO_DOWNLOAD): $RESULT"
                 # If pinned version failed, fall back to auto-resolution
                 if [ -n "$PINNED_VERSION" ] && [ "$PINNED_VERSION" != "null" ]; then
-                  echo "::notice::Pinned version download failed; falling back to auto-resolution for $PKG..."
+                  echo "Pinned version download failed; falling back to auto-resolution for $PKG..."
                   cp "$MPP_FILE" tools/patches.mpp
                   VERSIONS_OUTPUT=$(java -jar tools/morphe-cli.jar list-versions "$PKG" 2>/dev/null || echo "")
                   FALLBACK_VERSION=$(echo "$VERSIONS_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
                   if [ -n "$FALLBACK_VERSION" ]; then
-                    echo "::notice::Retrying download with auto-resolved version: $FALLBACK_VERSION"
+                    echo "Retrying download with auto-resolved version: $FALLBACK_VERSION"
                     FALLBACK_RESULT=$(node .github/scripts/unified-downloader.js "$PKG" "$FALLBACK_VERSION" "$APK_DIR" 2>&1) || true
                     if echo "$FALLBACK_RESULT" | jq -e '.success' >/dev/null 2>&1; then
                       echo "Downloaded $PKG via fallback: $(echo "$FALLBACK_RESULT" | jq -r '.filepath')"
@@ -467,7 +467,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "::notice::Verifying available tools..."
+          echo "Verifying available tools..."
 
           # Check for required tools (ubuntu-latest has these pre-installed)
           for tool in curl jq unzip; do
@@ -479,12 +479,12 @@ jobs:
             fi
           done
 
-          echo "::notice::All dependencies verified"
+          echo "All dependencies verified"
 
       - name: Install BouncyCastle for signing
         run: |
           set -euo pipefail
-          echo "::notice::Installing BouncyCastle for APK signing..."
+          echo "Installing BouncyCastle for APK signing..."
 
           # Create a directory for the JAR
           mkdir -p /tmp/bouncycastle
@@ -557,7 +557,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install Playwright
         run: npm ci
@@ -615,18 +615,18 @@ jobs:
 
           # Download .mpp if not cached
           if [ ! -f "$MPP_DEST" ]; then
-            echo "::notice::Downloading patches from ${PATCH_REPO}@${PATCH_TAG}..."
+            echo "Downloading patches from ${PATCH_REPO}@${PATCH_TAG}..."
             gh release download "$PATCH_TAG" \
               --repo "$PATCH_REPO" \
               --pattern 'patches-*.mpp' \
               --dir "$TOOLS_DIR" >/dev/null
             # Rename to slug-named file
             for f in "$TOOLS_DIR"/patches-*.mpp; do
-              [ -f "$f" ] && mv "$f" "$MPP_DEST" && echo "::notice::Saved as ${MPP_DEST}"
+              [ -f "$f" ] && mv "$f" "$MPP_DEST" && echo "Saved as ${MPP_DEST}"
               break
             done
           else
-            echo "::notice::Using cached ${MPP_DEST}"
+            echo "Using cached ${MPP_DEST}"
           fi
 
           if [ ! -f "$MPP_DEST" ]; then
@@ -647,7 +647,7 @@ jobs:
               --dir "$TOOLS_DIR" >/dev/null
           else
             echo "cli_tag=$CLI_TAG" >> "$GITHUB_OUTPUT"
-            echo "::notice::Using cached morphe-cli.jar"
+            echo "Using cached morphe-cli.jar"
           fi
 
           # Download APKEditor for split APK merge (.xapk/.apkm/.apks -> standalone .apk).
@@ -672,7 +672,7 @@ jobs:
             exit 1
           fi
           echo "apkeditor_jar=$APKEDITOR_JAR_PATH" >> "$GITHUB_OUTPUT"
-          echo "::notice::Downloaded APKEditor ${APKEDITOR_TAG}: ${APKEDITOR_ASSET}"
+          echo "Downloaded APKEditor ${APKEDITOR_TAG}: ${APKEDITOR_ASSET}"
 
       - name: Resolve supported version for ${{ matrix.appId }}
         id: targetver
@@ -682,7 +682,7 @@ jobs:
           PINNED_VERSION="$(jq -r --arg pkg '${{ matrix.appId }}' '.patch_repos[$pkg].pin_version // empty' config.json 2>/dev/null || true)"
 
           if [ -n "$PINNED_VERSION" ] && [ "$PINNED_VERSION" != "null" ]; then
-            echo "::notice::Using pinned version for ${{ matrix.appId }}: $PINNED_VERSION"
+            echo "Using pinned version for ${{ matrix.appId }}: $PINNED_VERSION"
 
             PINNED_COMPATIBLE="$(jq -r \
               --arg pkg '${{ matrix.appId }}' \
@@ -793,7 +793,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "::notice::Downloading APK for ${{ matrix.appId }}..."
+          echo "Downloading APK for ${{ matrix.appId }}..."
           APP_ID="${{ matrix.appId }}"
           TARGET_VERSION="${{ steps.targetver.outputs.version }}"
           TARGET_VERSIONS="${{ steps.targetver.outputs.versions }}"
@@ -817,7 +817,7 @@ jobs:
           done
 
           if [ -n "$CACHED_APK" ]; then
-            echo "::notice::Using cached APK: $CACHED_APK (v$TARGET_VERSION)"
+            echo "Using cached APK: $CACHED_APK (v$TARGET_VERSION)"
             DOWNLOAD_SUCCESS=true
           else
             rm -f "$APKS_DIR"/* || true
@@ -873,12 +873,12 @@ jobs:
             local out_apk="$2"
             local merge_log="$RUNNER_TEMP/apkeditor_merge_${{ matrix.name }}.log"
             if [ -z "${APKEDITOR_JAR}" ] || [ ! -f "${APKEDITOR_JAR}" ]; then
-              echo "::warning::APKEditor jar not available; cannot merge split package."
+              echo "APKEditor jar not available; cannot merge split package."
               return 1
             fi
 
             rm -f "$out_apk"
-            echo "::notice::Merging split package with APKEditor: $split_pkg"
+            echo "Merging split package with APKEditor: $split_pkg"
             set +e
             java -jar "${APKEDITOR_JAR}" m -i "$split_pkg" -o "$out_apk" >"$merge_log" 2>&1
             local rc=$?
@@ -895,13 +895,13 @@ jobs:
             fi
 
             if [ "$rc" -ne 0 ] || [ ! -f "$out_apk" ]; then
-              echo "::warning::APKEditor merge failed for $split_pkg"
+              echo "APKEditor merge failed for $split_pkg"
               cat "$merge_log" || true
               return 1
             fi
 
             if ! apk_has_dex "$out_apk"; then
-              echo "::warning::APKEditor output has no classes.dex: $out_apk"
+              echo "APKEditor output has no classes.dex: $out_apk"
               return 1
             fi
             return 0
@@ -936,7 +936,7 @@ jobs:
               return 1
             fi
 
-            echo "::notice::Downloading APK using Playwright..."
+            echo "Downloading APK using Playwright..."
 
             local apk_name="${url##*/}"
             apk_name="${apk_name%/}"
@@ -960,7 +960,7 @@ jobs:
               return 1
             fi
 
-            echo "::notice::Using APK source URL for ${APP_ID}: $url"
+            echo "Using APK source URL for ${APP_ID}: $url"
 
             local apk_name="${url##*/}"
             apk_name="${apk_name%/}"
@@ -974,7 +974,7 @@ jobs:
             local output_file="$APKS_DIR/$apk_name"
 
             while [ "$attempt" -le "$max_attempts" ]; do
-              echo "::notice::Download attempt ${attempt}/${max_attempts}..."
+              echo "Download attempt ${attempt}/${max_attempts}..."
 
               if curl -fL --retry 4 --retry-delay 5 --connect-timeout 30 \
                 -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36" \
@@ -985,18 +985,18 @@ jobs:
                 "$url"; then
 
                 if [ -s "$output_file" ] && [ "$(stat -c%s "$output_file" 2>/dev/null || echo 0)" -gt 1000 ]; then
-                  echo "::notice::Download saved: $output_file"
+                  echo "Download saved: $output_file"
                   return 0
                 fi
               fi
 
               if [ "$attempt" -ge "$max_attempts" ]; then
-                echo "::warning::Download failed after ${max_attempts} attempts."
+                echo "Download failed after ${max_attempts} attempts."
                 rm -f "$output_file"
                 return 1
               fi
 
-              echo "::warning::Download attempt ${attempt} failed, retrying..."
+              echo "Download attempt ${attempt} failed, retrying..."
               sleep $((attempt * 10))
               rm -f "$output_file"
               attempt=$((attempt + 1))
@@ -1015,7 +1015,7 @@ jobs:
             DOWNLOAD_SUCCESS=false
 
             if ! command -v aapt &> /dev/null; then
-              echo "::notice::Installing aapt for version validation..."
+              echo "Installing aapt for version validation..."
               mkdir -p /tmp/android-sdk
               curl -sSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
               unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
@@ -1039,19 +1039,19 @@ jobs:
             done
 
             if [ -n "$PRELOADED_APK" ] && [ -f "$PRELOADED_APK" ]; then
-              echo "::notice::Using pre-downloaded APK from check-versions: $PRELOADED_APK (matches v$TARGET_VERSION)"
+              echo "Using pre-downloaded APK from check-versions: $PRELOADED_APK (matches v$TARGET_VERSION)"
               cp "$PRELOADED_APK" "$APKS_DIR/"
               DOWNLOAD_SUCCESS=true
             else
-              echo "::notice::No matching APK found for v$TARGET_VERSION, using unified-downloader..."
+              echo "No matching APK found for v$TARGET_VERSION, using unified-downloader..."
               if RESULT=$(node .github/scripts/unified-downloader.js "$APP_ID" "$TARGET_VERSION" "$APKS_DIR" 2>&1); then
-                echo "::notice::unified-downloader succeeded: $RESULT"
+                echo "unified-downloader succeeded: $RESULT"
                 DOWNLOAD_SUCCESS=true
               else
-                echo "::warning::unified-downloader failed: $RESULT"
+                echo "unified-downloader failed: $RESULT"
 
                 if [ -n "$MANUAL_URL" ]; then
-                  echo "::notice::Trying manual URL fallback..."
+                  echo "Trying manual URL fallback..."
                   if download_with_playwright "$MANUAL_URL"; then
                     DOWNLOAD_SUCCESS=true
                   elif download_with_curl "$MANUAL_URL"; then
@@ -1073,13 +1073,13 @@ jobs:
                 FALLBACK_VERSIONS=$(java -jar tools/morphe-cli.jar list-versions "$APP_ID" 2>/dev/null || echo "")
                 FALLBACK_VERSION=$(echo "$FALLBACK_VERSIONS" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
                 if [ -n "$FALLBACK_VERSION" ]; then
-                  echo "::notice::Emergency fallback: retrying with version $FALLBACK_VERSION"
+                  echo "Emergency fallback: retrying with version $FALLBACK_VERSION"
                   TARGET_VERSION="$FALLBACK_VERSION"
                   if RESULT=$(node .github/scripts/unified-downloader.js "$APP_ID" "$FALLBACK_VERSION" "$APKS_DIR" 2>&1); then
-                    echo "::notice::Emergency fallback succeeded: $RESULT"
+                    echo "Emergency fallback succeeded: $RESULT"
                     DOWNLOAD_SUCCESS=true
                   else
-                    echo "::warning::Emergency fallback also failed: $RESULT"
+                    echo "Emergency fallback also failed: $RESULT"
                   fi
                 fi
               fi
@@ -1091,11 +1091,11 @@ jobs:
             fi
           fi
 
-          echo "::notice::Validating APK version matches target v$TARGET_VERSION using aapt..."
+          echo "Validating APK version matches target v$TARGET_VERSION using aapt..."
 
           # Ensure aapt is available (comes with android-sdk or can be installed)
           if ! command -v aapt &> /dev/null; then
-            echo "::notice::Installing aapt..."
+            echo "Installing aapt..."
             mkdir -p /tmp/android-sdk
             curl -sSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
             unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
@@ -1119,17 +1119,17 @@ jobs:
 
             # Compare versionName with target version
             if [ "$apk_version" = "$TARGET_VERSION" ]; then
-              echo "::notice::APK version validated: $(basename "$apk_file") is v$apk_version (matches target)"
+              echo "APK version validated: $(basename "$apk_file") is v$apk_version (matches target)"
               APK_VALID=true
               break
             elif [ -z "$apk_version" ]; then
               # aapt couldn't read the version (not installed or unsupported format)
               # unified-downloader already validated the version, so accept the APK
-              echo "::warning::Could not read APK version via aapt (aapt unavailable); trusting unified-downloader validation"
+              echo "Could not read APK version via aapt (aapt unavailable); trusting unified-downloader validation"
               APK_VALID=true
               break
             else
-              echo "::warning::APK has wrong version: $(basename "$apk_file") is v$apk_version but wanted v$TARGET_VERSION - removing"
+              echo "APK has wrong version: $(basename "$apk_file") is v$apk_version but wanted v$TARGET_VERSION - removing"
               rm -f "$apk_file"
             fi
           done
@@ -1138,7 +1138,7 @@ jobs:
           if [ "$APK_VALID" = false ]; then
             for apk_file in "$APKS_DIR"/*.{xapk,apkm,apks}; do
               [ -f "$apk_file" ] || continue
-              echo "::notice::Checking split package: $(basename "$apk_file")"
+              echo "Checking split package: $(basename "$apk_file")"
 
               # For split packages, extract base APK and validate version before merge
               if command -v aapt &> /dev/null; then
@@ -1152,12 +1152,12 @@ jobs:
                     split_version=$(echo "$split_info" | grep -oP "versionName='\K[^']+" | head -n1 || true)
                     echo "::debug::Split package base APK version: $split_version (expected: $TARGET_VERSION)"
                     if [ -n "$split_version" ] && [ "$split_version" != "$TARGET_VERSION" ]; then
-                      echo "::warning::Split package has wrong version: $split_version (expected $TARGET_VERSION) - removing"
+                      echo "Split package has wrong version: $split_version (expected $TARGET_VERSION) - removing"
                       rm -f "$apk_file"
                       rm -rf "$temp_dir"
                       continue
                     fi
-                    echo "::notice::Split package version validated: $split_version"
+                    echo "Split package version validated: $split_version"
                   fi
                 fi
                 rm -rf "$temp_dir"
@@ -1171,7 +1171,7 @@ jobs:
 
           if [ "$APK_VALID" = false ]; then
             echo "::error::No APK found with correct version v$TARGET_VERSION"
-            echo "::notice::Files in $APKS_DIR:"
+            echo "Files in $APKS_DIR:"
             ls -la "$APKS_DIR" || true
             exit 1
           fi
@@ -1180,27 +1180,27 @@ jobs:
 
           if [ -z "$APK_CANDIDATE" ]; then
             echo "::error::No package downloaded for latest Morphe-supported version $TARGET_VERSION for ${{ matrix.appId }}."
-            echo "::notice::All compatible versions (for reference): $TARGET_VERSIONS"
+            echo "All compatible versions (for reference): $TARGET_VERSIONS"
             exit 1
           fi
 
           if [ ! -f "$APK_CANDIDATE" ]; then
             echo "::error::Resolved package path is missing: $APK_CANDIDATE"
-            echo "::notice::Files in $APKS_DIR:"
+            echo "Files in $APKS_DIR:"
             ls -la "$APKS_DIR" || true
             exit 1
           fi
-          echo "::notice::Found package in $APKS_DIR: $APK_CANDIDATE"
+          echo "Found package in $APKS_DIR: $APK_CANDIDATE"
 
           # If an APK was selected directly, ensure it contains dex classes and is not a split-only config APK.
           if [[ "$APK_CANDIDATE" == *.apk ]] && ! apk_has_dex "$APK_CANDIDATE"; then
-            echo "::warning::Selected APK does not contain classes.dex; trying another APK candidate."
+            echo "Selected APK does not contain classes.dex; trying another APK candidate."
             ALT_APK="$(best_ranked_apk_in_dir "$APKS_DIR")"
             while IFS= read -r candidate; do
               [ -z "$candidate" ] && continue
               if apk_has_dex "$candidate"; then
                 APK_CANDIDATE="$candidate"
-                echo "::notice::Using APK with dex content: $APK_CANDIDATE"
+                echo "Using APK with dex content: $APK_CANDIDATE"
                 break
               fi
             done <<< "$ALT_APK"
@@ -1210,7 +1210,7 @@ jobs:
           if [[ "$APK_CANDIDATE" == *.apk ]] && ! apk_has_dex "$APK_CANDIDATE"; then
             SPLIT_FOUND="$(find "$APKS_DIR" -maxdepth 1 -type f \( -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) | head -n1 || true)"
             if [ -n "$SPLIT_FOUND" ]; then
-              echo "::warning::Switching to split package for merge: $SPLIT_FOUND"
+              echo "Switching to split package for merge: $SPLIT_FOUND"
               APK_CANDIDATE="$SPLIT_FOUND"
             fi
           fi
@@ -1219,12 +1219,12 @@ jobs:
           APK_PATH="$APK_CANDIDATE"
           case "$APK_CANDIDATE" in
             *.xapk|*.apkm|*.apks)
-              echo "::notice::Split package detected ($APK_CANDIDATE); attempting APKEditor merge..."
+              echo "Split package detected ($APK_CANDIDATE); attempting APKEditor merge..."
               APK_PATH="$APKS_DIR/${{ matrix.appId }}.apk"
               if merge_split_package_with_apkeditor "$APK_CANDIDATE" "$APK_PATH"; then
-                echo "::notice::Merged APK created: $APK_PATH"
+                echo "Merged APK created: $APK_PATH"
                 # Validate merged APK version
-                echo "::notice::Validating merged APK version..."
+                echo "Validating merged APK version..."
                 if command -v aapt &> /dev/null; then
                   merged_info=$(aapt dump badging "$APK_PATH" 2>/dev/null || echo "")
                   merged_version=$(echo "$merged_info" | grep -oP "versionName='\K[^']+" | head -n1 || true)
@@ -1235,7 +1235,7 @@ jobs:
                   fi
                 fi
               else
-                echo "::warning::APKEditor merge failed; falling back to direct APK extraction."
+                echo "APKEditor merge failed; falling back to direct APK extraction."
                 XAPK_TMP="$RUNNER_TEMP/xapk_${{ matrix.name }}"
                 rm -rf "$XAPK_TMP"
                 mkdir -p "$XAPK_TMP"
@@ -1263,13 +1263,13 @@ jobs:
 
                 if [ -z "$EXTRACTED_APK" ] || [ ! -f "$EXTRACTED_APK" ]; then
                   echo "::error::Could not extract APK from split package: $APK_CANDIDATE"
-                  echo "::notice::Archive APK contents:"
+                  echo "Archive APK contents:"
                   find "$XAPK_TMP" -type f -name "*.apk" -print || true
                   exit 1
                 fi
 
                 cp "$EXTRACTED_APK" "$APK_PATH"
-                echo "::notice::Extracted APK: $APK_PATH (from $(basename "$EXTRACTED_APK"))"
+                echo "Extracted APK: $APK_PATH (from $(basename "$EXTRACTED_APK"))"
               fi
               ;;
           esac
@@ -1281,7 +1281,7 @@ jobs:
 
           if ! apk_has_dex "$APK_PATH"; then
             echo "::error::Chosen APK has no classes.dex and cannot be patched: $APK_PATH"
-            echo "::notice::Files in $APKS_DIR:"
+            echo "Files in $APKS_DIR:"
             find "$APKS_DIR" -type f \( -name "*.apk" -o -name "*.xapk" -o -name "*.apkm" -o -name "*.apks" \) -print || true
             exit 1
           fi
@@ -1298,7 +1298,7 @@ jobs:
             APK_VERSION="unknown"
           fi
           echo "version=$APK_VERSION" >> "$GITHUB_OUTPUT"
-          echo "::notice::Downloaded ${{ matrix.name }} → $APK_PATH (v$APK_VERSION)"
+          echo "Downloaded ${{ matrix.name }} → $APK_PATH (v$APK_VERSION)"
 
       - name: Prepare signing keystore (required)
         id: keystore
@@ -1351,13 +1351,13 @@ jobs:
             echo "::error::Could not detect source keystore type using PKCS12/JKS/BKS/UBER."
             exit 1
           fi
-          echo "::notice::Detected source keystore type: $SRC_TYPE"
+          echo "Detected source keystore type: $SRC_TYPE"
 
           IMPORT_LOG="$RUNNER_TEMP/keytool_import_${{ matrix.name }}.log"
           run_import() {
             local mode="$1"
             shift
-            echo "::notice::Converting keystore to BKS (mode=$mode)..."
+            echo "Converting keystore to BKS (mode=$mode)..."
             set +e
             "$@" >"$IMPORT_LOG" 2>&1
             local rc=$?
@@ -1423,7 +1423,7 @@ jobs:
           KEY_ALIAS="$KEY_ALIAS_INPUT"
           if [ -z "$KEY_ALIAS" ]; then
             KEY_ALIAS="${KEY_ALIASES[0]}"
-            echo "::notice::No KEY_ALIAS provided; using alias '$KEY_ALIAS'."
+            echo "No KEY_ALIAS provided; using alias '$KEY_ALIAS'."
           else
             ALIAS_FOUND=false
             for a in "${KEY_ALIASES[@]}"; do
@@ -1434,14 +1434,14 @@ jobs:
             done
             if [ "$ALIAS_FOUND" = false ]; then
               echo "::error::KEY_ALIAS '$KEY_ALIAS' was not found in the converted keystore."
-              echo "::notice::Available aliases: ${KEY_ALIASES[*]}"
+              echo "Available aliases: ${KEY_ALIASES[*]}"
               exit 1
             fi
           fi
 
           echo "path=$DEST_KEYSTORE" >> "$GITHUB_OUTPUT"
           echo "alias=$KEY_ALIAS" >> "$GITHUB_OUTPUT"
-          echo "::notice::Prepared BKS keystore for Morphe signing."
+          echo "Prepared BKS keystore for Morphe signing."
 
       - name: Patch ${{ matrix.name }} with morphe-cli
         id: patch
@@ -1493,15 +1493,15 @@ jobs:
           DISABLED_COUNT="$(printf '%s\n' "$DISABLED_PATCHES" | sed '/^$/d' | wc -l | tr -d ' ')"
 
           if [ "$ENABLED_COUNT" -gt 0 ]; then
-            echo "::notice::Enabled patches for ${{ matrix.appId }} (${ENABLED_COUNT}): $(printf '%s\n' "$ENABLED_PATCHES" | sed '/^$/d' | paste -sd '; ' -)"
+            echo "Enabled patches for ${{ matrix.appId }} (${ENABLED_COUNT}): $(printf '%s\n' "$ENABLED_PATCHES" | sed '/^$/d' | paste -sd '; ' -)"
           else
-            echo "::notice::Enabled patches for ${{ matrix.appId }}: none"
+            echo "Enabled patches for ${{ matrix.appId }}: none"
           fi
 
           if [ "$DISABLED_COUNT" -gt 0 ]; then
-            echo "::notice::Disabled patches for ${{ matrix.appId }} (${DISABLED_COUNT}): $(printf '%s\n' "$DISABLED_PATCHES" | sed '/^$/d' | paste -sd '; ' -)"
+            echo "Disabled patches for ${{ matrix.appId }} (${DISABLED_COUNT}): $(printf '%s\n' "$DISABLED_PATCHES" | sed '/^$/d' | paste -sd '; ' -)"
           else
-            echo "::notice::Disabled patches for ${{ matrix.appId }}: none"
+            echo "Disabled patches for ${{ matrix.appId }}: none"
           fi
 
           PATCH_ARGS=()
@@ -1520,7 +1520,7 @@ jobs:
           run_patch() {
             local mode="$1"
             shift
-            echo "::notice::Running morphe-cli for ${{ matrix.appId }} (v$APK_VERSION, mode=$mode)..."
+            echo "Running morphe-cli for ${{ matrix.appId }} (v$APK_VERSION, mode=$mode)..."
             set +e
             "$@" 2>&1 | tee "$PATCH_LOG"
             local rc=${PIPESTATUS[0]}
@@ -1581,9 +1581,9 @@ jobs:
           fi
           if [ -z "$OUT_APK" ] || [ ! -f "$OUT_APK" ]; then
             echo "::error::Could not locate patched APK output"
-            echo "::notice::Files in current directory:"
+            echo "Files in current directory:"
             ls -la
-            echo "::notice::Files in $APKS_DIR:"
+            echo "Files in $APKS_DIR:"
             ls -la "$APKS_DIR" || true
             exit 1
           fi
@@ -1678,7 +1678,7 @@ jobs:
 
             apk_files="${APP_APKS[$app_name]}"
             if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "::notice::Release $TAG exists; uploading assets."
+              echo "Release $TAG exists; uploading assets."
               for apk in $apk_files; do
                 gh release upload "$TAG" "$apk" --clobber
               done
@@ -1770,7 +1770,7 @@ jobs:
             slug="${repo//\//-}"
             tag="$(echo "$REPO_VERSIONS" | jq -r --arg r "$repo" '.[$r] // empty')"
             if [ -z "$tag" ]; then
-              echo "::warning::No resolved tag for ${repo}; skipping patches sync for this repo."
+              echo "No resolved tag for ${repo}; skipping patches sync for this repo."
               continue
             fi
             url="https://raw.githubusercontent.com/${repo}/${tag}/patches-list.json"
@@ -1853,7 +1853,7 @@ jobs:
 
           # Ensure state file is valid JSON before merge/update.
           if [ ! -s state.json ] || ! jq -e 'type=="object"' state.json >/dev/null 2>&1; then
-            echo "::warning::state.json is missing or invalid JSON; recreating with defaults."
+            echo "state.json is missing or invalid JSON; recreating with defaults."
             echo '{}' > state.json
           fi
 
@@ -1914,8 +1914,8 @@ jobs:
 
           AFTER_STATE_HASH="$(sha256sum state.json | awk '{print $1}')"
           AFTER_PATCHES_HASH="$(sha256sum patches.json | awk '{print $1}')"
-          echo "::notice::state.json hash: ${BEFORE_STATE_HASH} -> ${AFTER_STATE_HASH}"
-          echo "::notice::patches.json hash: ${BEFORE_PATCHES_HASH} -> ${AFTER_PATCHES_HASH}"
+          echo "state.json hash: ${BEFORE_STATE_HASH} -> ${AFTER_STATE_HASH}"
+          echo "patches.json hash: ${BEFORE_PATCHES_HASH} -> ${AFTER_PATCHES_HASH}"
 
       - name: Commit state.json and patches.json
         run: |
@@ -1926,7 +1926,7 @@ jobs:
           # Strip download_urls entries for pinned apps before committing config.json
           PINNED_APPS="$(jq -r '[.patch_repos | to_entries[] | select(.value.pin_version != null and .value.pin_version != "") | .key]' config.json)"
           if [ "$PINNED_APPS" != "[]" ] && [ -n "$PINNED_APPS" ]; then
-            echo "::notice::Stripping download_urls for pinned apps: $PINNED_APPS"
+            echo "Stripping download_urls for pinned apps: $PINNED_APPS"
             tmp_config=$(mktemp)
             jq --argjson pinned "$PINNED_APPS" \
               'if .download_urls then
@@ -1940,7 +1940,7 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "::error::No state/patches changes detected after update step; refusing silent success."
-            echo "::notice::Current state.json:"
+            echo "Current state.json:"
             cat state.json || true
             exit 1
           fi
@@ -1950,7 +1950,7 @@ jobs:
           BRANCH_NAME="${GITHUB_REF_NAME:-main}"
           for attempt in 1 2 3; do
             if git push origin "HEAD:${BRANCH_NAME}"; then
-              echo "::notice::Pushed state updates to ${BRANCH_NAME}."
+              echo "Pushed state updates to ${BRANCH_NAME}."
               exit 0
             fi
 
@@ -1959,7 +1959,7 @@ jobs:
               exit 1
             fi
 
-            echo "::warning::Push rejected (attempt ${attempt}); rebasing on origin/${BRANCH_NAME} and retrying..."
+            echo "Push rejected (attempt ${attempt}); rebasing on origin/${BRANCH_NAME} and retrying..."
             git fetch origin "${BRANCH_NAME}"
             git rebase "origin/${BRANCH_NAME}"
           done

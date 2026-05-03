@@ -53,7 +53,7 @@ jobs:
                 ' || true
               )"
               if [ -z "$selected_tag" ]; then
-                echo "::warning::No dev-style release found for ${repo}; falling back to latest."
+                echo "No dev-style release found for ${repo}; falling back to latest."
                 selected_tag="$stable_tag"
               fi
             fi
@@ -75,9 +75,9 @@ jobs:
           # Resolve tag for each unique repo+branch; store in temp files
           mkdir -p "$RUNNER_TEMP/patch-tags"
           while IFS='|' read -r repo branch; do
-            echo "::notice::Resolving tag for ${repo} (branch=${branch})..."
+            echo "Resolving tag for ${repo} (branch=${branch})..."
             tag="$(resolve_release_tag "$repo" "$branch")"
-            echo "::notice::  -> ${tag}"
+            echo "  -> ${tag}"
             # Store tag in a file named by slug (/ replaced by -)
             slug="${repo//\//-}"
             echo "$tag" > "$RUNNER_TEMP/patch-tags/${slug}.tag"
@@ -90,7 +90,7 @@ jobs:
             slug="${repo//\//-}"
             tag="$(cat "$RUNNER_TEMP/patch-tags/${slug}.tag")"
             url="https://raw.githubusercontent.com/${repo}/${tag}/patches-list.json"
-            echo "::notice::Fetching patches-list.json from ${repo}@${tag}..."
+            echo "Fetching patches-list.json from ${repo}@${tag}..."
             curl -fsSL "$url" -o "$RUNNER_TEMP/patches-lists/${slug}.json"
           done <<< "$REPO_PAIRS"
 
