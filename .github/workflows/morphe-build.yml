@@ -426,8 +426,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pre-downloaded-apks
-          path: tools/apks/*.apk tools/apks/*.xapk tools/apks/*.apkm tools/apks/*.apks 2>/dev/null || true
+          path: |
+            tools/apks/*.apk
+            tools/apks/*.xapk
+            tools/apks/*.apkm
+            tools/apks/*.apks
           retention-days: 1
+          if-no-files-found: ignore
 
   build:
     needs: check-versions
@@ -1475,6 +1480,15 @@ jobs:
           fi
           KEY_ARGS=(--keystore="$KEYSTORE_FILE" --keystore-password="$KEYSTORE_PASSWORD" --keystore-entry-alias="$KEY_ALIAS" --keystore-entry-password="$KEY_ENTRY_PASS")
 
+          PATCHES_HAS_ENTRY="$(jq -r \
+            --arg repo "$PATCH_REPO" \
+            --arg pkg "${{ matrix.appId }}" \
+            'has($repo) and (.[$repo] | has($pkg))' \
+            patches.json 2>/dev/null || echo "false")"
+          if [ "$PATCHES_HAS_ENTRY" != "true" ]; then
+            echo "::warning::No patches.json entry for ${PATCH_REPO}/${{ matrix.appId }}; applying all patches."
+          fi
+
           # Build enabled/disabled lists from patches.json and pass disabled ones to morphe-cli.
           ENABLED_PATCHES="$(jq -r \
             --arg repo "$PATCH_REPO" \
@@ -1486,9 +1500,6 @@ jobs:
             --arg pkg "${{ matrix.appId }}" \
             '.[$repo][$pkg] // {} | to_entries[] | select(.value == false) | .key' \
             patches.json 2>/dev/null || true)"
-          if [ -z "$ENABLED_PATCHES" ] && [ -z "$DISABLED_PATCHES" ]; then
-            echo "::warning::No patches.json entry for ${PATCH_REPO}/${{ matrix.appId }}; applying all patches."
-          fi
           ENABLED_COUNT="$(printf '%s\n' "$ENABLED_PATCHES" | sed '/^$/d' | wc -l | tr -d ' ')"
           DISABLED_COUNT="$(printf '%s\n' "$DISABLED_PATCHES" | sed '/^$/d' | wc -l | tr -d ' ')"
 
