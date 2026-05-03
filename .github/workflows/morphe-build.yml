@@ -22,7 +22,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Check latest versions
         id: version-check
@@ -207,7 +207,7 @@ jobs:
 
       - name: Setup Node.js
         if: steps.version-check.outputs.should-build == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
 
@@ -217,7 +217,7 @@ jobs:
 
       - name: Cache Playwright browsers
         if: steps.version-check.outputs.should-build == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-chromium-${{ hashFiles('package.json') }}
@@ -230,7 +230,7 @@ jobs:
 
       - name: Upload Playwright browsers for build jobs
         if: steps.version-check.outputs.should-build == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-browsers
           path: ~/.cache/ms-playwright
@@ -239,7 +239,7 @@ jobs:
       - name: Cache apkeep
         id: cache-apkeep
         if: steps.version-check.outputs.should-build == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /usr/local/bin/apkeep
           key: apkeep-${{ runner.os }}-v1
@@ -256,7 +256,7 @@ jobs:
 
       - name: Upload apkeep for build jobs
         if: steps.version-check.outputs.should-build == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apkeep-binary
           path: /usr/local/bin/apkeep
@@ -315,7 +315,7 @@ jobs:
 
       - name: Cache morphe-cli and patches
         if: steps.version-check.outputs.should-build == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             tools/morphe-cli.jar
@@ -423,7 +423,7 @@ jobs:
 
       - name: Upload downloaded APKs
         if: steps.version-check.outputs.should-build == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pre-downloaded-apks
           path: tools/apks/*.apk tools/apks/*.xapk tools/apks/*.apkm tools/apks/*.apks 2>/dev/null || true
@@ -454,7 +454,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Java (for morphe-cli)
         uses: actions/setup-java@v4
@@ -507,7 +507,7 @@ jobs:
           fi
 
       - name: Download apkeep from check-versions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apkeep-binary
           path: /usr/local/bin
@@ -525,7 +525,7 @@ jobs:
           fi
 
       - name: Cache apkeep (fallback)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /usr/local/bin/apkeep
           key: apkeep-${{ runner.os }}-v1
@@ -548,14 +548,14 @@ jobs:
           mkdir -p "$TOOLS_DIR" "$APKS_DIR" "$OUT_DIR"
 
       - name: Download pre-downloaded APKs from check-versions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: pre-downloaded-apks
           path: "${{ env.TOOLS_DIR }}"
         continue-on-error: true
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
 
@@ -563,7 +563,7 @@ jobs:
         run: npm ci
 
       - name: Download Playwright browsers from check-versions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: playwright-browsers
           path: ~/.cache/ms-playwright
@@ -579,7 +579,7 @@ jobs:
           fi
 
       - name: Cache patches .mpp
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.TOOLS_DIR }}/${{ matrix.patchSlug }}.mpp
           key: morphe-patches-${{ matrix.patchSlug }}-${{ matrix.patchTag }}
@@ -587,7 +587,7 @@ jobs:
             morphe-patches-${{ matrix.patchSlug }}-
 
       - name: Cache morphe-cli
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.TOOLS_DIR }}/morphe-cli.jar
           key: morphe-cli-${{ needs.check-versions.outputs.cli-version }}
@@ -782,7 +782,7 @@ jobs:
 
       - name: Cache APK for ${{ matrix.appId }}
         id: cache-apk
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.APKS_DIR }}
           key: apk-${{ matrix.appId }}-${{ steps.targetver.outputs.version }}
@@ -1594,7 +1594,7 @@ jobs:
           echo "output=$OUTPUT_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload patched ${{ matrix.name }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-v${{ steps.getapk.outputs.version }}-${{ matrix.patchTag }}
           path: out/${{ steps.patch.outputs.output }}
@@ -1608,10 +1608,10 @@ jobs:
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download all APKs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: "*-v*"
           path: apks
@@ -1698,7 +1698,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Commit updated config.json
         run: |
@@ -1722,7 +1722,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Update state.json
         run: |
